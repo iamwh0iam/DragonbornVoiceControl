@@ -60,7 +60,10 @@ public:
     void SendOptions(const std::vector<std::string>& options);
     void SendClose();
     void SendListen(bool on);
-    void SendListenShouts(bool on);
+    void SendListenCommands(bool on);
+    void SendShoutContext(bool allowed);
+    void SendPlayerDrawnState(bool drawn);
+    void SendPlayerCombatState(bool inCombat);
     void SendGameLanguage(const std::string& langCode);
 
     // Sticky runtime config toggles (resent after reconnect and only when changed).
@@ -114,7 +117,10 @@ private:
     std::optional<std::vector<std::string>> _pendingFavorites;
     bool _pendingClose{ false };
     std::optional<bool> _pendingListen;
-    std::optional<bool> _pendingListenVoiceHandle;
+    std::optional<bool> _pendingListenCommands;
+    std::optional<bool> _desiredShoutContext;
+    std::optional<bool> _desiredPlayerDrawn;
+    std::optional<bool> _desiredPlayerCombat;
     std::optional<std::string> _desiredGameLang;
     // sticky config desired states
     std::optional<bool> _desiredCfgOpen;
@@ -139,6 +145,9 @@ private:
     std::optional<bool> _lastSentCfgSpells;
     std::optional<bool> _lastSentCfgPowers;
     std::optional<bool> _lastSentCfgPotions;
+    std::optional<bool> _lastSentShoutContext;
+    std::optional<bool> _lastSentPlayerDrawn;
+    std::optional<bool> _lastSentPlayerCombat;
     std::optional<std::string> _lastSentGameLang;
 
     std::mutex _respMutex;

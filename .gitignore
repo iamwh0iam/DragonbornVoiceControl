@@ -9,7 +9,7 @@
 .vscode/settings.json
 .github
 .trash
-#.gitignore
+.gitignore
 CMakeUserPresets.json
 # Possible C++ build output directories and files
 out

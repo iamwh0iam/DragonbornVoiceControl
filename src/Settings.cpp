@@ -7,6 +7,7 @@
 #include "Logging.h"
 #include "Paths.h"
 #include "PipeClient.h"
+#include "Runtime.h"
 #include "ServerLauncher.h"
 #include "VoiceHandle.h"
 
@@ -133,12 +134,6 @@ namespace DragonbornVoiceControl
             PipeClient::Get().SendConfigPotions(s.enablePotions);
         }
 
-        if (IsGameLoaded()) {
-            if (!s.enableVoiceShouts && oldShouts) {
-                PipeClient::Get().SendListenShouts(false);
-            }
-        }
-
         // Clear disabled categories immediately
         if (IsGameLoaded()) {
             if (!s.enableWeapons && oldWeapons) PipeClient::Get().SendWeaponsAllowed({});
@@ -156,13 +151,15 @@ namespace DragonbornVoiceControl
             if (s.enablePotions != oldPotions)          needRescan = true;
 
             if (needRescan) {
-                SKSE::GetTaskInterface()->AddTask([enableShouts = s.enableVoiceShouts] {
+                SKSE::GetTaskInterface()->AddTask([] {
                     ScanAllFavorites(true);
-                    if (enableShouts) {
-                        PipeClient::Get().SendListenShouts(true);
-                    }
+                    RefreshVoiceCommandState();
                 });
+            } else if (IsGameLoaded()) {
+                RefreshVoiceCommandState();
             }
+        } else if (IsGameLoaded()) {
+            RefreshVoiceCommandState();
         }
     }
 

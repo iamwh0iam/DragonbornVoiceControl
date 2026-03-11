@@ -239,7 +239,17 @@ def _export_runtime_env(cfg, asr: dict, backend_eff: str, cuda: str, vosk_model_
     else:
         os.environ.pop("DVC_WHISPER_LANG", None)
     os.environ["DVC_WHISPER_BEAM"] = str(cfg.whisper_beam)
-    os.environ["DVC_WHISPER_VOICE_COMMANDS"] = "1" if bool(cfg.whisper_voice_commands) else "0"
+    os.environ["DVC_WHISPER_CMD_BEAM"] = str(cfg.whisper_command_beam)
+    os.environ["DVC_WHISPER_CMD_BEST_OF"] = str(cfg.whisper_command_best_of)
+    os.environ["DVC_WHISPER_CMD_TEMPERATURE"] = str(cfg.whisper_command_temperature)
+    os.environ["DVC_WHISPER_CMD_LOGPROB"] = str(cfg.whisper_command_log_prob_threshold)
+    os.environ["DVC_WHISPER_CMD_NOSPEECH"] = str(cfg.whisper_command_no_speech_threshold)
+    os.environ["DVC_WHISPER_CMD_COMPRESSION"] = str(cfg.whisper_command_compression_ratio_threshold)
+    os.environ["DVC_WHISPER_CMD_REPETITION"] = str(cfg.whisper_command_repetition_penalty)
+    os.environ["DVC_WHISPER_CMD_NO_REPEAT_NGRAM"] = str(cfg.whisper_command_no_repeat_ngram_size)
+    os.environ["DVC_WHISPER_CMD_MAX_NEW_TOKENS"] = str(cfg.whisper_command_max_new_tokens)
+    os.environ["DVC_WHISPER_CMD_MAX_WORDS"] = str(cfg.whisper_command_max_words)
+    os.environ["DVC_WHISPER_CMD_WORD_SLACK"] = str(cfg.whisper_command_word_slack)
 
     os.environ["DVC_MIN_SCORE"] = str(cfg.min_score)
     os.environ["DVC_MIN_DIFF"] = str(cfg.min_diff)
@@ -261,8 +271,7 @@ def _export_runtime_env(cfg, asr: dict, backend_eff: str, cuda: str, vosk_model_
     os.environ.setdefault("DVC_SAVE_WAV", "0")
     os.environ["DVC_INMEM_AUDIO"] = "1" if bool(cfg.inmem_audio) else "0"
 
-    open_phrases = cfg.open_phrases or cfg.open_phrases
-    os.environ["DVC_OPEN_PHRASES"] = str(open_phrases)
+    open_phrases = cfg.open_phrases
     os.environ["DVC_OPEN_PHRASES"] = str(open_phrases)
     os.environ["DVC_OPEN_SCORE_THR"] = str(cfg.open_score_thr)
     os.environ["DVC_OPEN_MAX_REC_SEC"] = str(cfg.open_max_rec_sec)

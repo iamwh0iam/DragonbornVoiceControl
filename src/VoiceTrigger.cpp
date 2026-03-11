@@ -1,14 +1,3 @@
-// VoiceTrigger.cpp  –  Dragonborn Voice Control
-// Triggers a TESShout in-game upon receiving formid+power from the Python server.
-//
-// Shout triggering uses Papyrus Input.HoldKey/ReleaseKey via
-// DragonbornVoiceControlShout.SimulateShoutKey().  The engine handles
-// cooldown, menu checks, power tier — no C++ engine manipulation.
-//
-// Voice-line muting: stops any valid player sound handles during a short
-// window after the shout fires. This is player-specific and does not affect
-// NPC audio.
-
 #include "PCH.h"
 #include "VoiceTrigger.h"
 

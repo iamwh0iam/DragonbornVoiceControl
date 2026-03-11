@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Optional, TextIO
 
 from rich.console import Console
+from rich.markup import escape
 
 
 def _ts_now() -> str:
@@ -55,7 +56,14 @@ def _log_color(text: str, color: str) -> None:
                 _log_file.flush()
             except Exception:
                 pass
-        _console.print(f"[{color}][{ts}] {line}[/]")
+        try:
+            _console.print(f"[{color}][{ts}] {escape(line)}[/]")
+        except Exception:
+            try:
+                sys.__stdout__.write(f"[{ts}] {line}\n")
+                sys.__stdout__.flush()
+            except Exception:
+                pass
 
 
 def log_warn(text: str) -> None:

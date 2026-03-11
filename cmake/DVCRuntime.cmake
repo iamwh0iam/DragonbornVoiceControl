@@ -103,6 +103,8 @@ function(dvc_add_runtime_variant VARIANT VARIANT_LABEL REQ_FILE PYI_EXTRA_LIST I
 
   # 6) Stage runtime mod
   add_custom_command(TARGET "runtime-${VARIANT}" POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E remove_directory
+      "${runtime_stage_root}/SKSE/Plugins/${DVC_PIPE_RUNTIME_DIRNAME}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
       "${runtime_stage_root}/SKSE/Plugins/${DVC_PIPE_RUNTIME_DIRNAME}"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory

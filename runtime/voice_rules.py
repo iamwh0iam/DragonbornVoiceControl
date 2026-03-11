@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, Iterable
+from typing import Dict
 
 FEATURE_ORDER: tuple[str, ...] = (
     "select",
@@ -13,14 +13,19 @@ FEATURE_ORDER: tuple[str, ...] = (
 )
 
 
-def situation_allowed(*, dialog_open: bool, focus_on: bool) -> Dict[str, bool]:
-    # Focus is reserved for future rules; it does not affect the current matrix.
-    _ = focus_on
+def compute_effective(
+    *,
+    feature_enabled: Dict[str, bool],
+    dialog_open: bool,
+    open_listen: bool,
+    commands_listen: bool,
+    shout_context_allowed: bool,
+) -> Dict[str, bool]:
     if dialog_open:
         return {
-            "select": True,
+            "select": bool(feature_enabled.get("select", False)),
             "open": False,
-            "close": True,
+            "close": bool(feature_enabled.get("close", False)),
             "shouts": False,
             "powers": False,
             "weapons": False,
@@ -30,26 +35,17 @@ def situation_allowed(*, dialog_open: bool, focus_on: bool) -> Dict[str, bool]:
 
     return {
         "select": False,
-        "open": False,
+        "open": bool(feature_enabled.get("open", False) and open_listen),
         "close": False,
-        "shouts": True,
-        "powers": True,
-        "weapons": True,
-        "spells": True,
-        "potions": True,
-    }
-
-
-def compute_effective(
-    *,
-    feature_enabled: Dict[str, bool],
-    dialog_open: bool,
-    focus_on: bool,
-) -> Dict[str, bool]:
-    allowed = situation_allowed(dialog_open=dialog_open, focus_on=focus_on)
-    return {
-        key: bool(feature_enabled.get(key, False) and allowed.get(key, False))
-        for key in FEATURE_ORDER
+        "shouts": bool(
+            feature_enabled.get("shouts", False)
+            and commands_listen
+            and shout_context_allowed
+        ),
+        "powers": bool(feature_enabled.get("powers", False) and commands_listen),
+        "weapons": bool(feature_enabled.get("weapons", False) and commands_listen),
+        "spells": bool(feature_enabled.get("spells", False) and commands_listen),
+        "potions": bool(feature_enabled.get("potions", False) and commands_listen),
     }
 
 
@@ -62,7 +58,9 @@ def format_state(prefix: str, state: Dict[str, bool]) -> str:
 class VoiceState:
     feature_enabled: Dict[str, bool] = field(default_factory=dict)
     dialog_open: bool = False
-    focus_on: bool = False
+    open_listen: bool = False
+    commands_listen: bool = False
+    shout_context_allowed: bool = False
     last_effective: Dict[str, bool] | None = None
 
     def set_feature_enabled(self, enabled: Dict[str, bool]) -> None:
@@ -71,14 +69,22 @@ class VoiceState:
     def set_dialog_open(self, dialog_open: bool) -> None:
         self.dialog_open = bool(dialog_open)
 
-    def set_focus_on(self, focus_on: bool) -> None:
-        self.focus_on = bool(focus_on)
+    def set_open_listen(self, open_listen: bool) -> None:
+        self.open_listen = bool(open_listen)
+
+    def set_commands_listen(self, commands_listen: bool) -> None:
+        self.commands_listen = bool(commands_listen)
+
+    def set_shout_context_allowed(self, shout_context_allowed: bool) -> None:
+        self.shout_context_allowed = bool(shout_context_allowed)
 
     def effective(self) -> Dict[str, bool]:
         return compute_effective(
             feature_enabled=self.feature_enabled,
             dialog_open=self.dialog_open,
-            focus_on=self.focus_on,
+            open_listen=self.open_listen,
+            commands_listen=self.commands_listen,
+            shout_context_allowed=self.shout_context_allowed,
         )
 
     def effective_changed(self) -> tuple[bool, Dict[str, bool]]:

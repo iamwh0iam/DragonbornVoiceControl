@@ -66,10 +66,7 @@ namespace
 
             SKSE::GetTaskInterface()->AddTask([]() {
                 DragonbornVoiceControl::ScanAllFavorites(true);
-
-                if (DragonbornVoiceControl::IsVoiceShoutsEnabled()) {
-                    PipeClient::Get().SendListenShouts(true);
-                }
+                DragonbornVoiceControl::RefreshVoiceCommandState();
             });
         };
 

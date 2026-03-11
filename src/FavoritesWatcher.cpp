@@ -1,15 +1,3 @@
-// FavoritesWatcher.cpp  –  Dragonborn Voice Control
-//
-// Unified favorites monitoring.  All five categories (shouts, powers,
-// weapons, spells, potions) are scanned and sent to the pipe server
-// from a single entry point: ScanAllFavorites().
-//
-// Menu-close events trigger a full rescan:
-//   - FavoritesMenu close → rescan all categories
-//   - MagicMenu close     → rescan all categories (player may have spent dragon souls)
-//
-// On save load / reconnect the full scan is triggered from plugin.cpp / Runtime.cpp.
-
 #include "PCH.h"
 #include "FavoritesWatcher.h"
 

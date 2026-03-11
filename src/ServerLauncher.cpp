@@ -1,5 +1,3 @@
-// test_server_launcher.cpp
-// Minimal test launcher: find python near runtime, resolve real path, launch test_server.py
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <Shlwapi.h>

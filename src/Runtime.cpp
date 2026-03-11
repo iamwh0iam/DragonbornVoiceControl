@@ -34,6 +34,38 @@ namespace DragonbornVoiceControl
     static std::chrono::steady_clock::time_point g_focusLostTime;
     static bool g_hadFocusLastPoll = false;
 
+    static bool HasAnyVoiceCommandFeaturesEnabled()
+    {
+        return IsVoiceShoutsEnabled() || IsEnablePowersEnabled() || IsWeaponsEnabled() ||
+               IsSpellsEnabled() || IsPotionsEnabled();
+    }
+
+    static bool IsPlayerInCombat()
+    {
+        auto player = RE::PlayerCharacter::GetSingleton();
+        return player && player->IsInCombat();
+    }
+
+    static bool IsPlayerCombatReady()
+    {
+        auto player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            return false;
+        }
+
+        auto actorState = player->AsActorState();
+        if (!actorState) {
+            return false;
+        }
+
+        return actorState->IsWeaponDrawn();
+    }
+
+    static bool IsShoutContextAllowed()
+    {
+        return IsPlayerInCombat() || IsPlayerCombatReady();
+    }
+
     static RE::Actor* FindNPCInFront(float maxDist, float& outDist)
     {
         auto player = RE::PlayerCharacter::GetSingleton();
@@ -119,6 +151,7 @@ namespace DragonbornVoiceControl
             if (g_listenModeActive.load()) {
                 g_listenModeActive.store(false);
                 PipeClient::Get().SendListen(false);
+                RefreshVoiceCommandState();
             }
             return;
         }
@@ -127,6 +160,7 @@ namespace DragonbornVoiceControl
             if (g_listenModeActive.load()) {
                 g_listenModeActive.store(false);
                 PipeClient::Get().SendListen(false);
+                RefreshVoiceCommandState();
             }
             return;
         }
@@ -161,6 +195,7 @@ namespace DragonbornVoiceControl
             if (!g_listenModeActive.load() && focusDuration >= kFocusOnDelayMs) {
                 g_listenModeActive.store(true);
                 PipeClient::Get().SendListen(true);
+                RefreshVoiceCommandState();
             }
         } else {
             auto lostDuration = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_focusLostTime).count();
@@ -168,6 +203,7 @@ namespace DragonbornVoiceControl
             if (g_listenModeActive.load() && lostDuration >= kFocusGraceMs) {
                 g_listenModeActive.store(false);
                 PipeClient::Get().SendListen(false);
+                RefreshVoiceCommandState();
                 g_focusedActorHandle.reset();
             }
         }
@@ -196,7 +232,7 @@ namespace DragonbornVoiceControl
 
         g_listenModeActive.store(false);
         PipeClient::Get().SendListen(false);
-        PipeClient::Get().SendListenShouts(false);
+        PipeClient::Get().SendListenCommands(false);
 
         RE::ObjectRefHandle handleCopy = g_focusedActorHandle;
         SKSE::GetTaskInterface()->AddTask([handleCopy]() {
@@ -216,6 +252,7 @@ namespace DragonbornVoiceControl
 
         while (g_running.load()) {
             UpdateFocusDetection();
+            SyncShoutContextState();
 
             if (auto resp = PipeClient::Get().ConsumeLastResponse(); resp.has_value()) {
                 if (resp->type == "DBG") {
@@ -297,6 +334,7 @@ namespace DragonbornVoiceControl
                         PipeClient::Get().SendConfigWeapons(IsWeaponsEnabled());
                         PipeClient::Get().SendConfigSpells(IsSpellsEnabled());
                         PipeClient::Get().SendConfigPotions(IsPotionsEnabled());
+                        SyncShoutContextState();
                     }
 
                     // Only rescan favorites if the game is actually loaded.
@@ -305,18 +343,10 @@ namespace DragonbornVoiceControl
                     // would receive grammar with 0 entries while LISTEN|SHOUTS=ON.
                     // PostLoadGame handler in plugin.cpp takes care of the initial sync.
                     if (detail::g_gameLoaded.load()) {
-                        if (IsVoiceShoutsEnabled()) {
-                            SKSE::GetTaskInterface()->AddTask([] {
-                                ScanAllFavorites(true);
-                                if (!IsDialogueOpen()) {
-                                    PipeClient::Get().SendListenShouts(true);
-                                }
-                            });
-                        } else {
-                            SKSE::GetTaskInterface()->AddTask([] {
-                                ScanAllFavorites(true);
-                            });
-                        }
+                        SKSE::GetTaskInterface()->AddTask([] {
+                            ScanAllFavorites(true);
+                            RefreshVoiceCommandState();
+                        });
                     }
                 } else {
                     DebugNotify("Runtime disconnected");
@@ -335,6 +365,20 @@ namespace DragonbornVoiceControl
     {
         g_running.store(true);
         g_pollThread = std::thread(PollLoop);
+    }
+
+    void RefreshVoiceCommandState()
+    {
+        const bool enableCommands = HasAnyVoiceCommandFeaturesEnabled() && !IsDialogueOpen();
+        PipeClient::Get().SendListenCommands(enableCommands);
+        SyncShoutContextState();
+    }
+
+    void SyncShoutContextState()
+    {
+        PipeClient::Get().SendPlayerDrawnState(IsPlayerCombatReady());
+        PipeClient::Get().SendPlayerCombatState(IsPlayerInCombat());
+        PipeClient::Get().SendShoutContext(IsShoutContextAllowed());
     }
 
     void StopPollThread()

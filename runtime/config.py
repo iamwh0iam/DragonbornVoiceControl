@@ -15,11 +15,21 @@ class ServerConfig:
     mode: str = "vad"
     cuda: str = "cu128"
     cuda_specified: bool = False
-    whisper_model: str = "tiny"
+    whisper_model: str = "base"
     whisper_device: str = "auto"
     whisper_compute: str = "auto"
     whisper_beam: int = 5
-    whisper_voice_commands: bool = False
+    whisper_command_beam: int = 1
+    whisper_command_best_of: int = 1
+    whisper_command_temperature: float = 0.0
+    whisper_command_log_prob_threshold: float = -0.85
+    whisper_command_no_speech_threshold: float = 0.6
+    whisper_command_compression_ratio_threshold: float = 1.8
+    whisper_command_repetition_penalty: float = 1.15
+    whisper_command_no_repeat_ngram_size: int = 2
+    whisper_command_max_new_tokens: int = 12
+    whisper_command_max_words: int = 5
+    whisper_command_word_slack: int = 1
 
     min_score: float = 0.5
     min_diff: float = 0.12
@@ -87,7 +97,17 @@ _LOAD_RULES = (
     ("whisper_device", "get", _TEXT_LOWER, (("Whisper", "Device"),)),
     ("whisper_compute", "get", _TEXT_LOWER, (("Whisper", "ComputeType"),)),
     ("whisper_beam", "getint", _IDENTITY, (("Whisper", "BeamSize"),)),
-    ("whisper_voice_commands", "getboolean", _IDENTITY, (("Whisper", "VoiceCommandsWhisper"),)),
+    ("whisper_command_beam", "getint", _IDENTITY, (("Whisper", "CommandBeamSize"),)),
+    ("whisper_command_best_of", "getint", _IDENTITY, (("Whisper", "CommandBestOf"),)),
+    ("whisper_command_temperature", "getfloat", _IDENTITY, (("Whisper", "CommandTemperature"),)),
+    ("whisper_command_log_prob_threshold", "getfloat", _IDENTITY, (("Whisper", "CommandLogProbThreshold"),)),
+    ("whisper_command_no_speech_threshold", "getfloat", _IDENTITY, (("Whisper", "CommandNoSpeechThreshold"),)),
+    ("whisper_command_compression_ratio_threshold", "getfloat", _IDENTITY, (("Whisper", "CommandCompressionRatioThreshold"),)),
+    ("whisper_command_repetition_penalty", "getfloat", _IDENTITY, (("Whisper", "CommandRepetitionPenalty"),)),
+    ("whisper_command_no_repeat_ngram_size", "getint", _IDENTITY, (("Whisper", "CommandNoRepeatNgramSize"),)),
+    ("whisper_command_max_new_tokens", "getint", _IDENTITY, (("Whisper", "CommandMaxNewTokens"),)),
+    ("whisper_command_max_words", "getint", _IDENTITY, (("Whisper", "CommandMaxWords"),)),
+    ("whisper_command_word_slack", "getint", _IDENTITY, (("Whisper", "CommandWordSlack"),)),
     ("min_score", "getfloat", _IDENTITY, (("Matching", "MinScore"),)),
     ("min_diff", "getfloat", _IDENTITY, (("Matching", "MinDiff"),)),
     ("vad_frame", "getint", _IDENTITY, (("VAD", "Frame"),)),

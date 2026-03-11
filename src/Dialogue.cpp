@@ -4,6 +4,7 @@
 
 #include "Logging.h"
 #include "PipeClient.h"
+#include "Runtime.h"
 #include "Settings.h"
 
 #include <atomic>
@@ -158,7 +159,7 @@ namespace DragonbornVoiceControl
                     g_dialogueOpen.store(true);
                     g_lastOptions.clear();
 
-                    PipeClient::Get().SendListenShouts(false);
+                    RefreshVoiceCommandState();
                     LogLine("[SHOUTS] off (dialogue opened)");
 
                     g_selectInFlight.store(false);
@@ -175,10 +176,7 @@ namespace DragonbornVoiceControl
 
                     g_selectInFlight.store(false);
                     PipeClient::Get().SendClose();
-
-                    if (IsVoiceShoutsEnabled()) {
-                        PipeClient::Get().SendListenShouts(true);
-                    }
+                    RefreshVoiceCommandState();
                 }
             }
 

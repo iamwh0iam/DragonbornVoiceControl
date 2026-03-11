@@ -1,4 +1,3 @@
-// PipeClient.cpp
 #include "PipeClient.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -65,10 +64,28 @@ void PipeClient::SendListen(bool on)
     _pendingListen = on;
 }
 
-void PipeClient::SendListenShouts(bool on)
+void PipeClient::SendListenCommands(bool on)
 {
     std::lock_guard lg(_sendMutex);
-    _pendingListenVoiceHandle = on;
+    _pendingListenCommands = on;
+}
+
+void PipeClient::SendShoutContext(bool allowed)
+{
+    std::lock_guard lg(_sendMutex);
+    _desiredShoutContext = allowed;
+}
+
+void PipeClient::SendPlayerDrawnState(bool drawn)
+{
+    std::lock_guard lg(_sendMutex);
+    _desiredPlayerDrawn = drawn;
+}
+
+void PipeClient::SendPlayerCombatState(bool inCombat)
+{
+    std::lock_guard lg(_sendMutex);
+    _desiredPlayerCombat = inCombat;
 }
 
 void PipeClient::SendGameLanguage(const std::string& langCode)
@@ -667,15 +684,48 @@ void PipeClient::ThreadMain()
                 }
             }
 
+            if (_desiredShoutContext.has_value()) {
+                bool desired = _desiredShoutContext.value();
+                if (!_lastSentShoutContext.has_value() || _lastSentShoutContext.value() != desired) {
+                    if (!WriteLine(std::string("STATE|SHOUT_CONTEXT|") + (desired ? "1" : "0"))) {
+                        goto disconnect;
+                    }
+                    _lastSentShoutContext = desired;
+                    wroteAny = true;
+                }
+            }
+
+            if (_desiredPlayerDrawn.has_value()) {
+                bool desired = _desiredPlayerDrawn.value();
+                if (!_lastSentPlayerDrawn.has_value() || _lastSentPlayerDrawn.value() != desired) {
+                    if (!WriteLine(std::string("STATE|DRAWN|") + (desired ? "1" : "0"))) {
+                        goto disconnect;
+                    }
+                    _lastSentPlayerDrawn = desired;
+                    wroteAny = true;
+                }
+            }
+
+            if (_desiredPlayerCombat.has_value()) {
+                bool desired = _desiredPlayerCombat.value();
+                if (!_lastSentPlayerCombat.has_value() || _lastSentPlayerCombat.value() != desired) {
+                    if (!WriteLine(std::string("STATE|COMBAT|") + (desired ? "1" : "0"))) {
+                        goto disconnect;
+                    }
+                    _lastSentPlayerCombat = desired;
+                    wroteAny = true;
+                }
+            }
+
             // Important ordering:
-            // server ignores LISTEN|SHOUTS|1 while CFG|SHOUTS is still 0.
+            // server ignores LISTEN|SHOUTS|1 while CFG for voice commands is still 0.
             // Send CFG first, then LISTEN|SHOUTS to avoid losing the enable command.
-            if (_pendingListenVoiceHandle.has_value()) {
-                bool on = _pendingListenVoiceHandle.value();
+            if (_pendingListenCommands.has_value()) {
+                bool on = _pendingListenCommands.value();
                 if (!WriteLine(std::string("LISTEN|SHOUTS|") + (on ? "1" : "0"))) {
                     goto disconnect;
                 }
-                _pendingListenVoiceHandle.reset();
+                _pendingListenCommands.reset();
                 wroteAny = true;
             }
         }
@@ -722,6 +772,9 @@ void PipeClient::HandleDisconnect()
         _lastSentCfgSpells.reset();
         _lastSentCfgPowers.reset();
         _lastSentCfgPotions.reset();
+        _lastSentShoutContext.reset();
+        _lastSentPlayerDrawn.reset();
+        _lastSentPlayerCombat.reset();
         _lastSentGameLang.reset();
     }
 
