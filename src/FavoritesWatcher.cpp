@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "FavoritesWatcher.h"
 
+#include "Common.h"
 #include "Logging.h"
 #include "PipeClient.h"
 #include "Settings.h"
@@ -18,12 +19,7 @@ namespace DragonbornVoiceControl
 
     static std::string SafeName(const char* raw)
     {
-        if (!raw || !raw[0]) return {};
-        std::string s(raw);
-        for (char& c : s) {
-            if (c == '|' || c == '\n' || c == '\r') c = ' ';
-        }
-        return s;
+        return detail::SafeGameString(raw);
     }
 
     static bool EntriesEqual(const std::vector<ShoutEntry>& a, const std::vector<ShoutEntry>& b)
