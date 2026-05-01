@@ -53,6 +53,50 @@ namespace DragonbornVoiceControl
         return power;
     }
 
+    static RE::BGSEquipSlot* TryGetEquipSlot(RE::DEFAULT_OBJECT slotId)
+    {
+        auto* defaults = RE::BGSDefaultObjectManager::GetSingleton();
+        if (!defaults) {
+            return nullptr;
+        }
+
+        __try {
+            return defaults->GetObject<RE::BGSEquipSlot>(slotId);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return nullptr;
+        }
+    }
+
+    static bool TryEquipObject(RE::ActorEquipManager* eqMgr, RE::Actor* actor, RE::TESBoundObject* object, const RE::BGSEquipSlot* slot)
+    {
+        __try {
+            eqMgr->EquipObject(actor, object, nullptr, 1, slot);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    static bool TryEquipSpell(RE::ActorEquipManager* eqMgr, RE::Actor* actor, RE::SpellItem* spell, const RE::BGSEquipSlot* slot)
+    {
+        __try {
+            eqMgr->EquipSpell(actor, spell, slot);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    static bool TryUsePotion(RE::ActorEquipManager* eqMgr, RE::Actor* actor, RE::AlchemyItem* potion)
+    {
+        __try {
+            eqMgr->EquipObject(actor, potion);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
     // ─────────────── core validation ───────────────
 
     struct ShoutContext
@@ -122,7 +166,7 @@ namespace DragonbornVoiceControl
                      detail::FormIDToHex(ctx.formID));
             return false;
         }
-        const char* name = ctx.shout->GetFullName();
+        const char* name = detail::SafeGameCString(ctx.shout->GetFullName());
         ShoutDbg("TESShout lookup: OK — \"" + std::string(name ? name : "???") + "\"");
 
         // 4.  Variation validity
@@ -312,10 +356,10 @@ namespace DragonbornVoiceControl
                     callback);
 
                 if (dispatched) {
+                    const char* shoutName = detail::SafeGameCString(ctx.shout ? ctx.shout->GetFullName() : nullptr);
                     ShoutLog("Papyrus SimulateShoutKey dispatched, power=" +
                              std::to_string(ctx.power) +
-                             " \"" + (ctx.shout->GetFullName()
-                                      ? ctx.shout->GetFullName() : "???") + "\"");
+                             " \"" + (shoutName ? shoutName : "???") + "\"");
                 } else {
                     ShoutLog("FAIL: DispatchStaticCall returned false "
                              "(script not loaded? .pex missing?)");
@@ -471,15 +515,20 @@ namespace DragonbornVoiceControl
                     return;
                 }
 
-                // Equip to right hand
-                auto* rightSlot = RE::BGSDefaultObjectManager::GetSingleton()->GetObject<RE::BGSEquipSlot>(
-                    RE::DEFAULT_OBJECT::kRightHandEquip);
+                auto* rightSlot = TryGetEquipSlot(RE::DEFAULT_OBJECT::kRightHandEquip);
+                bool equipped = TryEquipObject(eqMgr, player, weap, rightSlot);
 
-                eqMgr->EquipObject(player, weap, nullptr, 1, rightSlot);
+                if (!equipped) {
+                    ShoutLog("WARN: EquipObject failed with requested slot, retrying without slot");
+                    equipped = TryEquipObject(eqMgr, player, weap, nullptr);
+                }
 
-                const char* name = weap->GetFullName();
-                ShoutLog("Weapon equipped (right hand): \"" +
-                         std::string(name ? name : "???") + "\"");
+                if (!equipped) {
+                    ShoutLog("FAIL: EquipObject failed without slot");
+                    return;
+                }
+
+                ShoutLog("Weapon equipped: formID=0x" + detail::FormIDToHex(formID));
             });
         }
     }
@@ -523,15 +572,20 @@ namespace DragonbornVoiceControl
                     return;
                 }
 
-                // Equip to right hand
-                auto* rightSlot = RE::BGSDefaultObjectManager::GetSingleton()->GetObject<RE::BGSEquipSlot>(
-                    RE::DEFAULT_OBJECT::kRightHandEquip);
+                auto* rightSlot = TryGetEquipSlot(RE::DEFAULT_OBJECT::kRightHandEquip);
+                bool equipped = TryEquipSpell(eqMgr, player, spell, rightSlot);
 
-                eqMgr->EquipSpell(player, spell, rightSlot);
+                if (!equipped) {
+                    ShoutLog("WARN: EquipSpell failed with requested slot, retrying without slot");
+                    equipped = TryEquipSpell(eqMgr, player, spell, nullptr);
+                }
 
-                const char* name = spell->GetFullName();
-                ShoutLog("Spell equipped (right hand): \"" +
-                         std::string(name ? name : "???") + "\"");
+                if (!equipped) {
+                    ShoutLog("FAIL: EquipSpell failed without slot");
+                    return;
+                }
+
+                ShoutLog("Spell equipped: formID=0x" + detail::FormIDToHex(formID));
             });
         }
     }
@@ -584,12 +638,12 @@ namespace DragonbornVoiceControl
                     return;
                 }
 
-                // EquipObject with a potion triggers consumption
-                eqMgr->EquipObject(player, alch);
+                if (!TryUsePotion(eqMgr, player, alch)) {
+                    ShoutLog("FAIL: EquipObject failed for potion");
+                    return;
+                }
 
-                const char* name = alch->GetFullName();
-                ShoutLog("Potion used: \"" +
-                         std::string(name ? name : "???") + "\"");
+                ShoutLog("Potion used: formID=0x" + detail::FormIDToHex(formID));
             });
         }
     }
