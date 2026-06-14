@@ -9,7 +9,14 @@ int _optMute
 int _optWeapons
 int _optSpells
 int _optPotions
+int _optQuickUsePotions
+int _optUseBestPotion
+int _optSpecifyHand
+int _optQuickEquip
+int _optKeyConsole
+int _optPauseResume
 int _optDebug
+int _optDebugUnrecognized
 int _optSaveWav
 int _optRestart
 
@@ -22,7 +29,14 @@ Bool Function GetEnablePowers() Global Native
 Bool Function GetEnableWeapons() Global Native
 Bool Function GetEnableSpells() Global Native
 Bool Function GetEnablePotions() Global Native
+Bool Function GetQuickUsePotions() Global Native
+Bool Function GetUseBestPotion() Global Native
+Bool Function GetSpecifyHand() Global Native
+Bool Function GetQuickEquip() Global Native
+Bool Function GetEnableKeyConsole() Global Native
+Bool Function GetEnablePauseResumePhrases() Global Native
 Bool Function GetDebug() Global Native
+Bool Function GetDebugUnrecognized() Global Native
 Bool Function GetSaveWavCaptures() Global Native
 
 Function SetEnableVoiceOpen(Bool value) Global Native
@@ -34,7 +48,14 @@ Function SetEnablePowers(Bool value) Global Native
 Function SetEnableWeapons(Bool value) Global Native
 Function SetEnableSpells(Bool value) Global Native
 Function SetEnablePotions(Bool value) Global Native
+Function SetQuickUsePotions(Bool value) Global Native
+Function SetUseBestPotion(Bool value) Global Native
+Function SetSpecifyHand(Bool value) Global Native
+Function SetQuickEquip(Bool value) Global Native
+Function SetEnableKeyConsole(Bool value) Global Native
+Function SetEnablePauseResumePhrases(Bool value) Global Native
 Function SetDebug(Bool value) Global Native
+Function SetDebugUnrecognized(Bool value) Global Native
 Function SetSaveWavCaptures(Bool value) Global Native
 
 Function RestartServer() Global Native
@@ -46,39 +67,34 @@ Event OnConfigInit()
 EndEvent
 
 Event OnPageReset(string page)
-    SetCursorFillMode(LEFT_TO_RIGHT)
+    SetCursorFillMode(TOP_TO_BOTTOM)
 
-    ; --- Left column: Voice Features ---
+    SetCursorPosition(0)
     AddHeaderOption("Voice Features")
-    ; --- Right column: Other ---
-    AddHeaderOption("Other")
 
     _optDialogueSelect = AddToggleOption("Dialogue Select", GetEnableDialogueSelect())
-    _optDebug   = AddToggleOption("Debug Notifications", GetDebug())
-
     _optOpen  = AddToggleOption("Dialogue Open", GetEnableVoiceOpen())
-    _optSaveWav = AddToggleOption("Save WAV Captures", GetSaveWavCaptures())
-
     _optClose = AddToggleOption("Dialogue Close", GetEnableVoiceClose())
-    _optRestart = AddTextOption("Restart Server", "Restart")
-
     _optShouts  = AddToggleOption("Shouts", GetEnableVoiceShouts())
-    AddEmptyOption()
-
-    _optMute    = AddToggleOption("Mute Shout Voice Line", GetMuteShoutVoiceLine())
-    AddEmptyOption()
-    
+    _optMute    = AddToggleOption("  Mute Shout Voice Line", GetMuteShoutVoiceLine())
     _optPowers = AddToggleOption("Powers", GetEnablePowers())
-    AddEmptyOption()
-
-    _optWeapons = AddToggleOption("Weapons", GetEnableWeapons())
-    AddEmptyOption()
-
     _optSpells  = AddToggleOption("Spells", GetEnableSpells())
-    AddEmptyOption()
-
+    _optWeapons = AddToggleOption("Weapons", GetEnableWeapons())
+    _optQuickEquip = AddToggleOption("  Quick Equip", GetQuickEquip())
+    _optSpecifyHand = AddToggleOption("  Specify Hand", GetSpecifyHand())
     _optPotions = AddToggleOption("Potions", GetEnablePotions())
-    AddEmptyOption()
+    _optQuickUsePotions = AddToggleOption("  Quick Use Potions", GetQuickUsePotions())
+    _optUseBestPotion = AddToggleOption("  Use Best Potion", GetUseBestPotion())
+    _optKeyConsole = AddToggleOption("Key / Console commands", GetEnableKeyConsole())
+    _optPauseResume = AddToggleOption("Pause / Resume commands", GetEnablePauseResumePhrases())
+
+    SetCursorPosition(1)
+    AddHeaderOption("System")
+
+    _optDebug   = AddToggleOption("Debug Notifications", GetDebug())
+    _optDebugUnrecognized = AddToggleOption("  Command Unrecognized Notifications", GetDebugUnrecognized())
+    _optSaveWav = AddToggleOption("Save WAV Captures", GetSaveWavCaptures())
+    _optRestart = AddTextOption("Restart Server", "Restart")
 EndEvent
 
 Event OnOptionSelect(int option)
@@ -127,9 +143,44 @@ Event OnOptionSelect(int option)
         SetEnablePotions(v)
         SetToggleOptionValue(option, v)
 
+    elseif option == _optQuickUsePotions
+        bool v = !GetQuickUsePotions()
+        SetQuickUsePotions(v)
+        SetToggleOptionValue(option, v)
+
+    elseif option == _optUseBestPotion
+        bool v = !GetUseBestPotion()
+        SetUseBestPotion(v)
+        SetToggleOptionValue(option, v)
+
+    elseif option == _optSpecifyHand
+        bool v = !GetSpecifyHand()
+        SetSpecifyHand(v)
+        SetToggleOptionValue(option, v)
+
+    elseif option == _optQuickEquip
+        bool v = !GetQuickEquip()
+        SetQuickEquip(v)
+        SetToggleOptionValue(option, v)
+
+    elseif option == _optKeyConsole
+        bool v = !GetEnableKeyConsole()
+        SetEnableKeyConsole(v)
+        SetToggleOptionValue(option, v)
+
+    elseif option == _optPauseResume
+        bool v = !GetEnablePauseResumePhrases()
+        SetEnablePauseResumePhrases(v)
+        SetToggleOptionValue(option, v)
+
     elseif option == _optDebug
         bool v = !GetDebug()
         SetDebug(v)
+        SetToggleOptionValue(option, v)
+
+    elseif option == _optDebugUnrecognized
+        bool v = !GetDebugUnrecognized()
+        SetDebugUnrecognized(v)
         SetToggleOptionValue(option, v)
 
     elseif option == _optSaveWav
@@ -150,10 +201,10 @@ Event OnOptionHighlight(int option)
         SetInfoText("Enable voice selection of dialogue options.")
 
     elseif option == _optOpen
-        SetInfoText("Enable voice open phrases to open dialogue when looking at an NPC.")
+        SetInfoText("Enable voice open commands to open dialogue when looking at an NPC. Open commands must be configured in DVCRuntime.ini.")
 
     elseif option == _optClose
-        SetInfoText("Enable voice close phrases to close dialogue.")
+        SetInfoText("Enable voice close commands to close dialogue. Close commands must be configured in DVCRuntime.ini.")
 
     elseif option == _optShouts
         SetInfoText("Use favorite shouts by speaking shout words.")
@@ -173,13 +224,34 @@ Event OnOptionHighlight(int option)
     elseif option == _optPotions
         SetInfoText("Use favorite potions by speaking their name.")
 
+    elseif option == _optQuickUsePotions
+        SetInfoText("Enable quick-use potion commands - 'Health potion / Healing potion', 'Magicka potion / Mana potion', or 'Stamina potion'. Group names can be changed in DVCRuntime.ini.")
+
+    elseif option == _optUseBestPotion
+        SetInfoText("Use the strongest matching favorited potion instead of the weakest one.")
+
+    elseif option == _optSpecifyHand
+        SetInfoText("Allow saying hand suffixes 'Left', 'Right', or 'Both' after weapon and spell names. Suffix words can be changed in DVCRuntime.ini")
+
+    elseif option == _optQuickEquip
+        SetInfoText("Enable quick equip weapons by equipment type such as 'Sword', 'Bow', 'Shield', etc. Types can be changed in DVCRuntime.ini.")
+
+    elseif option == _optKeyConsole
+        SetInfoText("Enable voice commands to activate console commands and key presses. Console and key commands must be configured in DVCRuntime.ini.")
+
+    elseif option == _optPauseResume
+        SetInfoText("Enable voice commands 'Stop speech recognition' and 'Start speech recognition' that disable and enable other voice commands. Pause and resume commands can be changed in DVCRuntime.ini.")
+
     elseif option == _optDebug
         SetInfoText("Show in-game recognition notifications.")
+
+    elseif option == _optDebugUnrecognized
+        SetInfoText("Show unrecognized command notifications. If Debug Notifications is on, these messages are always shown.")
 
     elseif option == _optSaveWav
         SetInfoText("Save captured voice audio to DVCRuntime/caches/vad_caps/*.wav for debugging.")
 
     elseif option == _optRestart
-        SetInfoText("Restart the voice recognition server.")
+        SetInfoText("Restart the voice recognition local server.")
     endif
 EndEvent

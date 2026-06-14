@@ -64,11 +64,27 @@ def _close_score_thr() -> float:
 
 
 def _min_score() -> float:
-    return _env_float("DVC_MIN_SCORE", float(_cfg().min_score))
+    return _env_float("DVC_DIALOGUE_SELECT_SCORE_THR", float(_cfg().dialogue_select_score_thr))
 
 
 def _min_diff() -> float:
-    return _env_float("DVC_MIN_DIFF", float(_cfg().min_diff))
+    return _env_float("DVC_DIALOGUE_SELECT_MIN_DIFF", float(_cfg().dialogue_select_min_diff))
+
+
+def open_score_threshold() -> float:
+    return _open_score_thr()
+
+
+def close_score_threshold() -> float:
+    return _close_score_thr()
+
+
+def min_score_threshold() -> float:
+    return _min_score()
+
+
+def min_diff_threshold() -> float:
+    return _min_diff()
 
 
 def normalize(text: str) -> str:
@@ -120,6 +136,60 @@ def get_close_phrases_list() -> list[str]:
         if n:
             phrases.append(n)
     return phrases
+
+
+def _phrases_from_csv(value: str) -> list[str]:
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for p in str(value or "").split(","):
+        n = normalize(p)
+        if n and n not in seen:
+            seen.add(n)
+            phrases.append(n)
+    return phrases
+
+
+def get_pause_phrases_list() -> list[str]:
+    cfg = _cfg()
+    return _phrases_from_csv(_env_str("DVC_PAUSE_PHRASES", str(cfg.pause_phrases)))
+
+
+def get_resume_phrases_list() -> list[str]:
+    cfg = _cfg()
+    return _phrases_from_csv(_env_str("DVC_RESUME_PHRASES", str(cfg.resume_phrases)))
+
+
+def match_exact_phrase(text: str, phrase_list: list[str]) -> tuple[bool, float, str, float, str]:
+    ntext = normalize(text)
+    best_score = 0.0
+    best_phrase = ""
+    if not ntext:
+        return False, 0.0, "", 0.0, ""
+
+    text_tokens = set(tokens(ntext))
+    for phrase in phrase_list:
+        pnorm = normalize(phrase)
+        if not pnorm:
+            continue
+        if ntext == pnorm:
+            return True, 1.0, pnorm, 1.0, pnorm
+        ptokens = set(tokens(pnorm))
+        if not ptokens:
+            continue
+        score = len(text_tokens & ptokens) / len(ptokens)
+        if score > best_score:
+            best_score = float(score)
+            best_phrase = pnorm
+
+    return False, best_score, best_phrase, 1.0, best_phrase
+
+
+def match_pause(text: str) -> tuple[bool, float, str, float, str]:
+    return match_exact_phrase(text, get_pause_phrases_list())
+
+
+def match_resume(text: str) -> tuple[bool, float, str, float, str]:
+    return match_exact_phrase(text, get_resume_phrases_list())
 
 
 def _evaluate_phrase_match(ntext: str, text_tokens: set[str], phrase: str) -> tuple[bool, float, str]:
@@ -246,6 +316,46 @@ def best_dialogue_option(text: str, options: list[str]) -> tuple[int, float]:
         return idx0, float(sc1)
 
     return -1, 0.0
+
+
+def dialogue_match_diagnostics(text: str, options: list[str]) -> dict:
+    ntext = normalize(text)
+    if not ntext:
+        return {"reason": "empty_text", "score": 0.0}
+    if not options:
+        return {"reason": "no_options", "score": 0.0}
+
+    scores = _best_match_scores(text, options)
+    if not scores:
+        return {"reason": "no_options", "score": 0.0}
+
+    sc1, idx0, opt0, overlap0 = scores[0]
+    sc2 = scores[1][0] if len(scores) > 1 else 0.0
+    diff = sc1 - sc2
+    min_score = _min_score()
+    min_diff = _min_diff()
+    score_ok = overlap0 >= 2 or sc1 >= min_score
+    diff_ok = diff >= min_diff
+
+    reason = "ok"
+    threshold = None
+    if not score_ok:
+        reason = "below_threshold"
+        threshold = min_score
+    elif not diff_ok:
+        reason = "ambiguous"
+
+    return {
+        "reason": reason,
+        "index": idx0,
+        "option": opt0,
+        "score": float(sc1),
+        "threshold": threshold,
+        "second_score": float(sc2),
+        "diff": float(diff),
+        "min_diff": float(min_diff),
+        "overlap": int(overlap0),
+    }
 
 
 def rank_dialogue_options(text: str, options: list[str]) -> list[tuple[float, int, str]]:

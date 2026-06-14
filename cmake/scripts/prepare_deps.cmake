@@ -23,12 +23,22 @@ if(DVC_PIP_UPGRADE)
   if(NOT _rv0 EQUAL 0)
     message(FATAL_ERROR "pip upgrade failed (rv=${_rv0}).")
   endif()
+else()
+  message(STATUS "Deps: ensuring setuptools/wheel")
+  execute_process(
+    COMMAND "${DVC_PYTHON_EXE}" -m pip install setuptools wheel
+            --disable-pip-version-check --no-warn-script-location --no-user
+    RESULT_VARIABLE _rv0
+  )
+  if(NOT _rv0 EQUAL 0)
+    message(FATAL_ERROR "pip install setuptools/wheel failed (rv=${_rv0}).")
+  endif()
 endif()
 
 if(EXISTS "${REQ_FILE}")
   message(STATUS "Deps: installing requirements into portable python (no --target)")
   execute_process(
-    COMMAND "${DVC_PYTHON_EXE}" -m pip install -r "${REQ_FILE}"
+    COMMAND "${DVC_PYTHON_EXE}" -m pip install --no-build-isolation -r "${REQ_FILE}"
             --disable-pip-version-check --no-warn-script-location --no-user
     RESULT_VARIABLE _rv1
   )

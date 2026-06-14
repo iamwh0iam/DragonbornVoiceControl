@@ -47,23 +47,66 @@ set(DVC_REQ_VOSK        "${DVC_RUNTIME_SRC_DIR}/requirements/requirements-vosk.t
 set(DVC_REQ_WHISPER_CPU "${DVC_RUNTIME_SRC_DIR}/requirements/requirements-whisper-cpu.txt" CACHE FILEPATH "Requirements for Whisper CPU runtime")
 set(DVC_REQ_WHISPER_GPU "${DVC_RUNTIME_SRC_DIR}/requirements/requirements-whisper-gpu.txt" CACHE FILEPATH "Requirements for Whisper GPU runtime")
 
-set(DVC_RUNTIME_ENTRY "${DVC_RUNTIME_SRC_DIR}/main.py" CACHE FILEPATH "Runtime entrypoint (Python)")
+set(DVC_RUNTIME_BOOTSTRAP_ENTRY "${DVC_RUNTIME_SRC_DIR}/bootstrap.py" CACHE FILEPATH "PyInstaller bootstrap entrypoint")
+set(DVC_RUNTIME_APP_FILES
+  "main.py"
+  "audio_pipeline.py"
+  "config.py"
+  "log_utils.py"
+  "matching.py"
+  "pipe_server.py"
+  "recognition.py"
+  "sd.py"
+  "shout_recognition.py"
+  "voice_rules.py"
+  "vosk_models.py"
+  CACHE STRING "Semicolon-separated Python files packed into app.zip (relative to runtime/)"
+)
+
+set(DVC_MAIN_RUNTIME_ROOT_FILES
+  "DVCRuntime.ini"
+  CACHE STRING "Semicolon-separated runtime app files staged under SKSE/Plugins/ in the main mod (relative to runtime/)"
+)
+
+set(DVC_MAIN_RUNTIME_EXTRA_FILES
+  "shout_grammar.json"
+  "shouts_map.json"
+  CACHE STRING "Semicolon-separated runtime app data files staged under SKSE/Plugins/DVCRuntime/ in the main mod (relative to runtime/)"
+)
 
 set(DVC_RUNTIME_EXTRA_FILES
   "check_audio_device.bat"
-  "shout_grammar.json"
-  "shouts_map.json"
-  CACHE STRING "Semicolon-separated list of runtime extra files (relative to runtime/)"
+  CACHE STRING "Semicolon-separated utility files staged into the runtime mod (relative to runtime/)"
 )
 
 option(DVC_BUILD_VOSK "Enable Vosk runtime targets" ON)
 option(DVC_BUILD_WHISPER_CPU "Enable Whisper CPU runtime targets" ON)
 option(DVC_BUILD_WHISPER_GPU "Enable Whisper GPU runtime targets" ON)
 
-# Extra PyInstaller args per variant (semicolon list) 
-set(DVC_PYI_EXTRA_VOSK "--collect-all;vosk" CACHE STRING "Extra PyInstaller args for Vosk variant (semicolon list)")
-set(DVC_PYI_EXTRA_WHISPER_CPU "--collect-all;vosk" CACHE STRING "Extra PyInstaller args for Whisper CPU variant (semicolon list)")
-set(DVC_PYI_EXTRA_WHISPER_GPU "--collect-all;vosk" CACHE STRING "Extra PyInstaller args for Whisper GPU variant (semicolon list)")
+# Extra PyInstaller args per variant (semicolon list)
+# app.zip is loaded dynamically, so PyInstaller cannot infer its dependencies
+# from bootstrap.py. Variant manifests are appended in DVCRuntime.cmake as
+# non-cache args, so an old CMake cache cannot accidentally omit them.
+set(DVC_PYI_EXTRA_COMMON
+  "--collect-submodules;rich"
+  "--collect-submodules;chardet"
+  CACHE STRING "Common extra PyInstaller args"
+)
+
+set(DVC_PYI_EXTRA_VOSK
+  "${DVC_PYI_EXTRA_COMMON}"
+  CACHE STRING "Extra PyInstaller args for Vosk variant (semicolon list)"
+)
+
+set(DVC_PYI_EXTRA_WHISPER_CPU
+  "${DVC_PYI_EXTRA_COMMON}"
+  CACHE STRING "Extra PyInstaller args for Whisper CPU variant (semicolon list)"
+)
+
+set(DVC_PYI_EXTRA_WHISPER_GPU
+  "${DVC_PYI_EXTRA_COMMON}"
+  CACHE STRING "Extra PyInstaller args for Whisper GPU variant (semicolon list)"
+)
 
 # Reproducibility: OFF by default (you asked to control versions via requirements)
 option(DVC_PIP_UPGRADE "Upgrade pip/setuptools/wheel before installing requirements" OFF)

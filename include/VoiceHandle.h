@@ -10,6 +10,7 @@ namespace DragonbornVoiceControl
     void HandleWeaponTrigger(const PipeResponse& resp);
     void HandleSpellTrigger(const PipeResponse& resp);
     void HandlePotionTrigger(const PipeResponse& resp);
+    void HandleCustomCommandTrigger(const PipeResponse& resp);
 
     void SetGameLoaded(bool loaded);
     bool IsGameLoaded();

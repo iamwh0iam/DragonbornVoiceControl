@@ -10,3 +10,4 @@ vosk
 torch==2.10.0+cu128
 torchaudio==2.10.0+cu128
 faster-whisper
+chardet

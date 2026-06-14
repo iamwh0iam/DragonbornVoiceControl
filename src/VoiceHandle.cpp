@@ -42,48 +42,32 @@ namespace DragonbornVoiceControl
 
     void HandleVoiceTrigger(const PipeResponse& resp)
     {
-        LogLine("[TRIG] shout received: formid=" + resp.shoutFormID +
-                " power=" + std::to_string(resp.shoutPower) +
-                " score=" + std::to_string(resp.score) +
-                " text=\"" + resp.trigText + "\"");
-
         TriggerShout(resp);
     }
 
     void HandlePowerTrigger(const PipeResponse& resp)
     {
-        LogLine("[TRIG] power received: formid=" + resp.powerFormID +
-                " score=" + std::to_string(resp.score) +
-                " text=\"" + resp.trigText + "\"");
-
         TriggerPower(resp);
     }
 
     void HandleWeaponTrigger(const PipeResponse& resp)
     {
-        LogLine("[TRIG] weapon received: formid=" + resp.itemFormID +
-                " score=" + std::to_string(resp.score) +
-                " text=\"" + resp.trigText + "\"");
-
         TriggerWeapon(resp);
     }
 
     void HandleSpellTrigger(const PipeResponse& resp)
     {
-        LogLine("[TRIG] spell received: formid=" + resp.itemFormID +
-                " score=" + std::to_string(resp.score) +
-                " text=\"" + resp.trigText + "\"");
-
         TriggerSpell(resp);
     }
 
     void HandlePotionTrigger(const PipeResponse& resp)
     {
-        LogLine("[TRIG] potion received: formid=" + resp.itemFormID +
-                " score=" + std::to_string(resp.score) +
-                " text=\"" + resp.trigText + "\"");
-
         TriggerPotion(resp);
+    }
+
+    void HandleCustomCommandTrigger(const PipeResponse& resp)
+    {
+        TriggerCustomCommands(resp);
     }
 
     void SetGameLoaded(bool loaded)

@@ -29,4 +29,7 @@ namespace DragonbornVoiceControl
 
     /// Called from HandlePotionTrigger — uses a potion from inventory.
     void TriggerPotion(const PipeResponse& resp);
+
+    /// Called from HandleCustomCommandTrigger — runs configured console/key commands.
+    void TriggerCustomCommands(const PipeResponse& resp);
 }

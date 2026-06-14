@@ -9,3 +9,4 @@ pyinstaller-hooks-contrib==2026.0
 vosk
 torch==2.10.0
 torchaudio==2.10.0
+chardet

@@ -26,6 +26,10 @@ struct PipeResponse
 
     // Generic item field (for TRIG|weapon, TRIG|spell, TRIG|potion)
     std::string itemFormID;
+    std::string itemEquipHand = "right";  // for weapon/spell: "left", "right", or "both"
+
+    // Custom console/key commands (for TRIG|custom)
+    std::vector<std::string> customCommands;
 };
 
 struct ShoutEntry
@@ -48,6 +52,15 @@ struct ItemEntry
     std::string name;
 };
 
+struct PotionEntry
+{
+    std::string formIdHex;
+    std::string name;
+    float healthRestorePower = 0.0f;
+    float magickaRestorePower = 0.0f;
+    float staminaRestorePower = 0.0f;
+};
+
 class PipeClient
 {
 public:
@@ -60,10 +73,10 @@ public:
     void SendOptions(const std::vector<std::string>& options);
     void SendClose();
     void SendListen(bool on);
-    void SendListenCommands(bool on);
     void SendShoutContext(bool allowed);
     void SendPlayerDrawnState(bool drawn);
     void SendPlayerCombatState(bool inCombat);
+    void SendBlockingMenuState(bool blocked);
     void SendGameLanguage(const std::string& langCode);
 
     // Sticky runtime config toggles (resent after reconnect and only when changed).
@@ -77,13 +90,19 @@ public:
     void SendConfigSpells(bool enabled);
     void SendConfigPowers(bool enabled);
     void SendConfigPotions(bool enabled);
+    void SendConfigPotionsQuickUse(bool enabled);
+    void SendConfigPotionsBestPotion(bool enabled);
+    void SendConfigSpecifyHand(bool enabled);
+    void SendConfigQuickEquip(bool enabled);
+    void SendConfigKeyConsole(bool enabled);
+    void SendConfigPauseResume(bool enabled);
 
     // Favorites grammar sync.
     void SendShoutsAllowed(const std::vector<ShoutEntry>& shouts);
     void SendPowersAllowed(const std::vector<PowerEntry>& powers);
     void SendWeaponsAllowed(const std::vector<ItemEntry>& weapons);
     void SendSpellsAllowed(const std::vector<ItemEntry>& spells);
-    void SendPotionsAllowed(const std::vector<ItemEntry>& potions);
+    void SendPotionsAllowed(const std::vector<PotionEntry>& potions);
 
     // Favorites batch sync.
     void SendAllFavorites(
@@ -91,10 +110,12 @@ public:
         const std::vector<PowerEntry>& powers,
         const std::vector<ItemEntry>& weapons,
         const std::vector<ItemEntry>& spells,
-        const std::vector<ItemEntry>& potions);
+        const std::vector<PotionEntry>& potions);
 
     std::optional<PipeResponse> ConsumeLastResponse();
     std::optional<bool> ConsumeConnectionEvent();
+    std::optional<bool> ConsumeClientReadyEvent();
+    bool IsClientReady() const;
 
 private:
     PipeClient() = default;
@@ -117,10 +138,10 @@ private:
     std::optional<std::vector<std::string>> _pendingFavorites;
     bool _pendingClose{ false };
     std::optional<bool> _pendingListen;
-    std::optional<bool> _pendingListenCommands;
     std::optional<bool> _desiredShoutContext;
     std::optional<bool> _desiredPlayerDrawn;
     std::optional<bool> _desiredPlayerCombat;
+    std::optional<bool> _desiredBlockingMenu;
     std::optional<std::string> _desiredGameLang;
     // sticky config desired states
     std::optional<bool> _desiredCfgOpen;
@@ -133,6 +154,12 @@ private:
     std::optional<bool> _desiredCfgSpells;
     std::optional<bool> _desiredCfgPowers;
     std::optional<bool> _desiredCfgPotions;
+    std::optional<bool> _desiredCfgPotionsQuickUse;
+    std::optional<bool> _desiredCfgPotionsBestPotion;
+    std::optional<bool> _desiredCfgSpecifyHand;
+    std::optional<bool> _desiredCfgQuickEquip;
+    std::optional<bool> _desiredCfgKeyConsole;
+    std::optional<bool> _desiredCfgPauseResume;
 
     // last-sent states (to avoid spamming)
     std::optional<bool> _lastSentCfgOpen;
@@ -145,9 +172,16 @@ private:
     std::optional<bool> _lastSentCfgSpells;
     std::optional<bool> _lastSentCfgPowers;
     std::optional<bool> _lastSentCfgPotions;
+    std::optional<bool> _lastSentCfgPotionsQuickUse;
+    std::optional<bool> _lastSentCfgPotionsBestPotion;
+    std::optional<bool> _lastSentCfgSpecifyHand;
+    std::optional<bool> _lastSentCfgQuickEquip;
+    std::optional<bool> _lastSentCfgKeyConsole;
+    std::optional<bool> _lastSentCfgPauseResume;
     std::optional<bool> _lastSentShoutContext;
     std::optional<bool> _lastSentPlayerDrawn;
     std::optional<bool> _lastSentPlayerCombat;
+    std::optional<bool> _lastSentBlockingMenu;
     std::optional<std::string> _lastSentGameLang;
 
     std::mutex _respMutex;
@@ -155,4 +189,6 @@ private:
 
     std::mutex _connMutex;
     std::optional<bool> _connEvent;
+    std::optional<bool> _readyEvent;
+    std::atomic<bool> _clientReady{ false };
 };

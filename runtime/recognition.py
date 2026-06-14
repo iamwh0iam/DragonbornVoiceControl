@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import wave
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import numpy as np
@@ -13,13 +14,14 @@ import numpy as np
 import matching
 from config import ServerConfig
 from vosk_models import ensure_vosk_model
-from log_utils import setup_timestamped_print, log_warn, log_error
+from log_utils import setup_timestamped_print, log_debug, log_info, log_warn, log_error
 
 setup_timestamped_print()
 
 
 SR = 16000
 WAV_DEBUG_DIR_REL = "caches/vad_caps"
+ITEM_HAND_VALUE_SEP = "\t"
 
 
 def _env_str(key: str, default: str) -> str:
@@ -105,13 +107,15 @@ class Recognizer:
         self._allowed_power_entries: list[tuple[str, str]] | None = None
         self._allowed_weapon_entries: list[tuple[str, str]] | None = None
         self._allowed_spell_entries: list[tuple[str, str]] | None = None
-        self._allowed_potion_entries: list[tuple[str, str]] | None = None
+        self._allowed_potion_entries: list[tuple] | None = None
         self._power_phrase_to_formid: dict[str, str] | None = None
         self._vosk_power_grammar_json: str | None = None
         self._vosk_power_rec = None
 
         # Weapon/Spell/Potion item recognition
         self._weapon_phrase_to_formid: dict[str, str] | None = None
+        self._weapon_quick_phrase_to_formid: dict[str, str] | None = None
+        self._weapon_quick_phrases: list[str] = []
         self._vosk_weapon_grammar_json: str | None = None
         self._vosk_weapon_rec = None
 
@@ -120,8 +124,14 @@ class Recognizer:
         self._vosk_spell_rec = None
 
         self._potion_phrase_to_formid: dict[str, str] | None = None
+        self._potion_quick_phrase_to_formid: dict[str, str] | None = None
+        self._potion_quick_phrases: list[str] = []
         self._vosk_potion_grammar_json: str | None = None
         self._vosk_potion_rec = None
+        self._vosk_commands_grammar_json: str | None = None
+        self._vosk_commands_rec = None
+        self._custom_command_phrase_to_commands: dict[str, str] = {}
+        self._custom_command_phrases: list[str] = []
 
         cfg_engine = self.cfg.asr_engine
         cfg_lang = self.cfg.asr_lang
@@ -150,6 +160,55 @@ class Recognizer:
         self.whisper_command_max_new_tokens = _env_int("DVC_WHISPER_CMD_MAX_NEW_TOKENS", int(self.cfg.whisper_command_max_new_tokens))
         self.whisper_command_max_words = _env_int("DVC_WHISPER_CMD_MAX_WORDS", int(self.cfg.whisper_command_max_words))
         self.whisper_command_word_slack = _env_int("DVC_WHISPER_CMD_WORD_SLACK", int(self.cfg.whisper_command_word_slack))
+        self.whisper_command_hotwords = _env_bool("DVC_WHISPER_CMD_HOTWORDS", bool(getattr(self.cfg, "whisper_command_hotwords", True)))
+        self.whisper_command_fuzzy_match = _env_bool("DVC_WHISPER_CMD_FUZZY_MATCH", bool(getattr(self.cfg, "whisper_command_fuzzy_match", True)))
+        self.voice_equip_specify_hand = _env_bool(
+            "DVC_VOICE_EQUIP_SPECIFY_HAND",
+            bool(getattr(self.cfg, "voice_equip_specify_hand", False)),
+        )
+        self.voice_equip_hand_suffixes = {
+            "right": self._hand_suffixes(
+                "DVC_VOICE_EQUIP_RIGHT_HAND_SUFFIX",
+                getattr(self.cfg, "voice_equip_right_hand_suffix", "right"),
+            ),
+            "left": self._hand_suffixes(
+                "DVC_VOICE_EQUIP_LEFT_HAND_SUFFIX",
+                getattr(self.cfg, "voice_equip_left_hand_suffix", "left"),
+            ),
+            "both": self._hand_suffixes(
+                "DVC_VOICE_EQUIP_BOTH_HANDS_SUFFIX",
+                getattr(self.cfg, "voice_equip_both_hands_suffix", "both"),
+            ),
+        }
+        self.voice_equip_quick_equip = _env_bool(
+            "DVC_VOICE_EQUIP_QUICK_EQUIP",
+            bool(getattr(self.cfg, "voice_equip_quick_equip", True)),
+        )
+        self.voice_equip_equipment_types = _env_str(
+            "DVC_VOICE_EQUIP_EQUIPMENT_TYPES",
+            str(getattr(self.cfg, "voice_equip_equipment_types", "")),
+        )
+        self.potions_quick_use = _env_bool(
+            "DVC_POTIONS_QUICK_USE",
+            bool(getattr(self.cfg, "potions_quick_use", True)),
+        )
+        self.potions_health = _env_str(
+            "DVC_POTIONS_HEALTH",
+            str(getattr(self.cfg, "potions_health", "")),
+        )
+        self.potions_magicka = _env_str(
+            "DVC_POTIONS_MAGICKA",
+            str(getattr(self.cfg, "potions_magicka", "")),
+        )
+        self.potions_stamina = _env_str(
+            "DVC_POTIONS_STAMINA",
+            str(getattr(self.cfg, "potions_stamina", "")),
+        )
+        self.potions_best_potion = _env_bool(
+            "DVC_POTIONS_BEST_POTION",
+            bool(getattr(self.cfg, "potions_best_potion", True)),
+        )
+        self._set_custom_commands(getattr(self.cfg, "custom_commands", None))
 
         cfg_vosk = self.cfg.vosk_model
         self.vosk_model_path = _env_str("DVC_VOSK_MODEL_PATH", "")
@@ -283,9 +342,8 @@ class Recognizer:
         if not self.shouts_vosk_model_path:
             default_selected = (not self._cfg_shouts_vosk_specified) and (not self._cfg_shouts_lang_specified)
             reason = "default" if default_selected else "configured"
-            print(
+            log_info(
                 f"[SHOUT] Loading Vosk model for shouts ({model_name}, lang={self.shouts_lang}, reason={reason})",
-                flush=True,
             )
             cache_dir = (self.runtime_dir / "caches" / "vosk").resolve()
             model_dir = ensure_vosk_model(model_name, cache_dir)
@@ -315,24 +373,189 @@ class Recognizer:
     def _build_whisper_command_mapping(
         self,
         entries: list[tuple[str, str]] | None,
+        kind: str | None = None,
     ) -> tuple[dict[str, str] | None, list[str]]:
         """Build whisper mapping (normalized phrase -> formid) + raw phrases list."""
         if not entries:
             return None, []
         mapping: dict[str, str] = {}
         phrases: list[str] = []
-        for formid, name in entries:
-            formid_hex = self._normalize_shout_formid(formid)
-            phrase = matching.normalize(str(name or ""))
-            if not formid_hex or not phrase:
+        for raw_phrase, norm_phrase, value in self._entry_phrase_values(entries, kind):
+            if not norm_phrase:
                 continue
-            if phrase in mapping:
+            if norm_phrase in mapping:
                 continue
-            mapping[phrase] = formid_hex
-            phrases.append(str(name or "").strip())
+            mapping[norm_phrase] = value
+            phrases.append(raw_phrase)
         if not phrases:
             return None, []
         return mapping, phrases
+
+    def _hand_suffixes(self, env_key: str, default: str) -> list[str]:
+        suffixes: list[str] = []
+        for suffix in _env_str(env_key, str(default)).split(","):
+            raw = str(suffix or "").strip()
+            if raw and matching.normalize(raw):
+                suffixes.append(raw)
+        return suffixes
+
+    def _comma_phrases(self, source: str) -> list[str]:
+        phrases: list[str] = []
+        seen: set[str] = set()
+        for raw in str(source or "").split(","):
+            phrase = str(raw or "").strip()
+            norm = matching.normalize(phrase)
+            if not phrase or not norm or norm in seen:
+                continue
+            seen.add(norm)
+            phrases.append(phrase)
+        return phrases
+
+    def _quick_equip_phrases(self) -> list[str]:
+        if not self.voice_equip_quick_equip:
+            return []
+        return self._comma_phrases(self.voice_equip_equipment_types)
+
+    def _potion_quick_use_phrases(self) -> list[str]:
+        phrases: list[str] = []
+        for _target, group_phrases in self._potion_quick_groups():
+            phrases.extend(group_phrases)
+        return self._unique_phrases(phrases)
+
+    def _potion_quick_groups(self) -> list[tuple[str, list[str]]]:
+        if not self.potions_quick_use:
+            return []
+        return [
+            ("health", self._comma_phrases(self.potions_health)),
+            ("magicka", self._comma_phrases(self.potions_magicka)),
+            ("stamina", self._comma_phrases(self.potions_stamina)),
+        ]
+
+    def _entry_formid_name(self, entry) -> tuple[str, str]:
+        if not entry or len(entry) < 2:
+            return "", ""
+        return str(entry[0] or ""), str(entry[1] or "")
+
+    def _potion_power(self, entry, target: str) -> float:
+        index_by_target = {
+            "health": 2,
+            "magicka": 3,
+            "stamina": 4,
+        }
+        idx = index_by_target.get(str(target or ""))
+        if idx is None or not entry or len(entry) <= idx:
+            return 0.0
+        try:
+            return float(entry[idx])
+        except Exception:
+            return 0.0
+
+    def _item_value(self, formid_hex: str, hand: str | None = None) -> str:
+        hand_norm = str(hand or "").strip().lower()
+        if hand_norm not in ("left", "right", "both"):
+            return formid_hex
+        return f"{formid_hex}{ITEM_HAND_VALUE_SEP}{hand_norm}"
+
+    def _hand_suffix_variants(self) -> list[tuple[str, str]]:
+        variants: list[tuple[str, str]] = []
+        for hand in ("left", "right", "both"):
+            for suffix in self.voice_equip_hand_suffixes.get(hand, []):
+                variants.append((hand, suffix))
+        return variants
+
+    def _build_weapon_quick_equip_mapping(self, entries: list[tuple[str, str]] | None) -> tuple[dict[str, str] | None, list[str]]:
+        quick_phrases = self._quick_equip_phrases()
+        if not entries or not quick_phrases:
+            return None, []
+
+        mapping: dict[str, str] = {}
+        out_phrases: list[str] = []
+        for quick_raw in quick_phrases:
+            quick_norm = matching.normalize(quick_raw)
+            if not quick_norm:
+                continue
+            for entry in entries:
+                formid, name = self._entry_formid_name(entry)
+                formid_hex = self._normalize_shout_formid(formid)
+                name_norm = matching.normalize(str(name or ""))
+                if not formid_hex or not name_norm:
+                    continue
+                if quick_norm in name_norm:
+                    mapping[quick_norm] = self._item_value(formid_hex, "right")
+                    out_phrases.append(quick_raw)
+                    break
+
+        if not mapping:
+            return None, []
+        return mapping, self._unique_phrases(out_phrases)
+
+    def _build_potion_quick_use_mapping(self, entries: list[tuple] | None) -> tuple[dict[str, str] | None, list[str]]:
+        quick_groups = self._potion_quick_groups()
+        if not entries or not quick_groups:
+            return None, []
+
+        mapping: dict[str, str] = {}
+        out_phrases: list[str] = []
+        for target, quick_phrases in quick_groups:
+            matches = []
+            for entry in entries:
+                formid, name = self._entry_formid_name(entry)
+                formid_hex = self._normalize_shout_formid(formid)
+                if formid_hex and self._potion_power(entry, target) > 0.0:
+                    matches.append((entry, formid_hex))
+
+            if not matches:
+                continue
+
+            if self.potions_best_potion:
+                selected_entry, selected_formid = max(
+                    matches,
+                    key=lambda item: self._potion_power(item[0], target),
+                )
+            else:
+                selected_entry, selected_formid = min(
+                    matches,
+                    key=lambda item: self._potion_power(item[0], target),
+                )
+
+            for quick_raw in quick_phrases:
+                quick_norm = matching.normalize(quick_raw)
+                if not quick_norm or quick_norm in mapping:
+                    continue
+                mapping[quick_norm] = selected_formid
+                out_phrases.append(quick_raw)
+
+        if not mapping:
+            return None, []
+        return mapping, self._unique_phrases(out_phrases)
+
+    def _entry_phrase_values(
+        self,
+        entries: list[tuple[str, str]] | None,
+        kind: str | None = None,
+    ) -> list[tuple[str, str, str]]:
+        if not entries:
+            return []
+
+        out: list[tuple[str, str, str]] = []
+        hand_aware = bool(self.voice_equip_specify_hand) and kind in ("weapon", "spell")
+        for entry in entries:
+            formid, name = self._entry_formid_name(entry)
+            formid_hex = self._normalize_shout_formid(formid)
+            raw = str(name or "").strip()
+            norm = matching.normalize(raw)
+            if not formid_hex or not raw or not norm:
+                continue
+
+            if hand_aware:
+                out.append((raw, norm, self._item_value(formid_hex, "right")))
+                for hand, suffix in self._hand_suffix_variants():
+                    phrase = f"{raw} {suffix}"
+                    out.append((phrase, matching.normalize(phrase), self._item_value(formid_hex, hand)))
+            else:
+                out.append((raw, norm, formid_hex))
+
+        return out
 
     def _configured_phrase_strings(self, kind: str) -> list[str]:
         if kind == "open":
@@ -341,6 +564,12 @@ class Recognizer:
         elif kind == "close":
             source = self.cfg.close_phrases or ""
             env_key = "DVC_CLOSE_PHRASES"
+        elif kind == "pause":
+            source = self.cfg.pause_phrases or ""
+            env_key = "DVC_PAUSE_PHRASES"
+        elif kind == "resume":
+            source = self.cfg.resume_phrases or ""
+            env_key = "DVC_RESUME_PHRASES"
         else:
             return []
 
@@ -354,6 +583,14 @@ class Recognizer:
             seen.add(norm)
             phrases.append(phrase)
         return phrases
+
+    def _pause_resume_candidate_phrases(self, *, paused: bool) -> list[str]:
+        phrases: list[str] = []
+        if paused:
+            phrases.extend(self._configured_phrase_strings("resume"))
+        else:
+            phrases.extend(self._configured_phrase_strings("pause"))
+        return self._unique_phrases(phrases)
 
     def _unique_phrases(self, phrases: list[str] | None) -> list[str]:
         seen: set[str] = set()
@@ -373,22 +610,51 @@ class Recognizer:
             if kind == "power":
                 phrases.extend(self._entries_to_phrases(self._allowed_power_entries))
             elif kind == "weapon":
-                phrases.extend(self._entries_to_phrases(self._allowed_weapon_entries))
+                phrases.extend(self._entries_to_item_phrases(self._allowed_weapon_entries, kind))
             elif kind == "spell":
-                phrases.extend(self._entries_to_phrases(self._allowed_spell_entries))
+                phrases.extend(self._entries_to_item_phrases(self._allowed_spell_entries, kind))
             elif kind == "potion":
-                phrases.extend(self._entries_to_phrases(self._allowed_potion_entries))
+                phrases.extend(self._entries_to_item_phrases(self._allowed_potion_entries, kind))
+            elif kind == "custom":
+                phrases.extend(self._custom_command_phrases)
+            elif kind == "pause":
+                phrases.extend(self._configured_phrase_strings("pause"))
         return self._unique_phrases(phrases)
 
-    def _command_hotwords_text(self, candidate_phrases: list[str] | None) -> str | None:
+    def _is_hand_expanded_hotword(self, norm: str, suffix_norms: set[str], base_norms: set[str]) -> bool:
+        parts = [part for part in str(norm or "").split(" ") if part]
+        if len(parts) < 2:
+            return False
+
+        for suffix_norm in suffix_norms:
+            suffix_parts = [part for part in suffix_norm.split(" ") if part]
+            if not suffix_parts or len(parts) <= len(suffix_parts):
+                continue
+            if parts[-len(suffix_parts):] != suffix_parts:
+                continue
+            base_norm = " ".join(parts[:-len(suffix_parts)])
+            if base_norm in base_norms:
+                return True
+        return False
+
+    def _command_hotword_phrases(self, candidate_phrases: list[str] | None) -> list[str]:
+        phrases = self._unique_phrases(candidate_phrases)
+        base_norms = {matching.normalize(phrase) for phrase in phrases}
+        suffix_phrases = [suffix for _hand, suffix in self._hand_suffix_variants()]
+        suffix_norms = {matching.normalize(suffix) for suffix in suffix_phrases}
+
         hotwords: list[str] = []
-        total_chars = 0
-        for phrase in self._unique_phrases(candidate_phrases):
-            add_len = len(phrase) + (2 if hotwords else 0)
-            if len(hotwords) >= 24 or total_chars + add_len > 320:
-                break
+        for phrase in phrases:
+            norm = matching.normalize(phrase)
+            if self._is_hand_expanded_hotword(norm, suffix_norms, base_norms):
+                continue
             hotwords.append(phrase)
-            total_chars += add_len
+
+        hotwords.extend(suffix_phrases)
+        return self._unique_phrases(hotwords)
+
+    def _command_hotwords_text(self, candidate_phrases: list[str] | None) -> str | None:
+        hotwords = self._command_hotword_phrases(candidate_phrases)
         if not hotwords:
             return None
         return ", ".join(hotwords)
@@ -479,7 +745,9 @@ class Recognizer:
 
     def _transcribe_whisper_command(self, pcm16: np.ndarray, *, candidate_phrases: list[str] | None = None):
         t0 = time.perf_counter()
-        hotwords = self._command_hotwords_text(candidate_phrases)
+        hotword_phrases = self._command_hotword_phrases(candidate_phrases) if self.whisper_command_hotwords else []
+        hotwords = ", ".join(hotword_phrases) if hotword_phrases else None
+        hotwords_count = len(hotword_phrases)
         kwargs = {
             "beam_size": max(1, int(self.whisper_command_beam)),
             "best_of": max(1, int(self.whisper_command_best_of)),
@@ -495,6 +763,10 @@ class Recognizer:
         }
         if hotwords:
             kwargs["hotwords"] = hotwords
+        log_debug(
+            f"[WHISPER HOTWORDS] enabled={1 if self.whisper_command_hotwords else 0} count={hotwords_count} "
+            f"hotwords={json.dumps(hotwords or '', ensure_ascii=False)}"
+        )
 
         if self.use_inmem_audio:
             t_wh0 = time.perf_counter()
@@ -684,6 +956,34 @@ class Recognizer:
         t_asr1 = time.perf_counter()
         return text, {"t_asr": (t_asr1 - t_asr0), "t_total_io": (t_asr1 - t0), "grammar": True}
 
+    def _ensure_vosk_commands_recognizer(self, candidate_phrases: list[str] | None):
+        phrases: list[str] = []
+        seen: set[str] = set()
+        for raw in candidate_phrases or []:
+            phrase = matching.normalize(raw)
+            if not phrase or phrase in seen:
+                continue
+            seen.add(phrase)
+            phrases.append(phrase)
+
+        grammar_json = json.dumps(phrases, ensure_ascii=False)
+        if not phrases or grammar_json == "[]":
+            return None
+        if self._vosk_commands_rec is not None and self._vosk_commands_grammar_json == grammar_json:
+            return self._vosk_commands_rec
+
+        try:
+            from vosk import KaldiRecognizer
+            model = self._ensure_vosk_items()
+            self._vosk_commands_rec = KaldiRecognizer(model, SR, grammar_json)
+            self._vosk_commands_grammar_json = grammar_json
+            return self._vosk_commands_rec
+        except Exception as e:
+            log_warn(f"[COMMAND][WARN] failed to init vosk command grammar: {e}")
+            self._vosk_commands_grammar_json = None
+            self._vosk_commands_rec = None
+            return None
+
     def transcribe_dialogue(self, pcm16: np.ndarray):
         if self.asr_engine == "vosk":
             if self._vosk_dialog_rec is not None:
@@ -714,6 +1014,15 @@ class Recognizer:
             grammar = self._vosk_grammar_json("close")
             return self._transcribe_vosk_grammar(pcm16, grammar)
         return self._transcribe_whisper_command(pcm16, candidate_phrases=self._configured_phrase_strings("close"))
+
+    def transcribe_pause_resume(self, pcm16: np.ndarray, *, paused: bool):
+        phrases = self._pause_resume_candidate_phrases(paused=paused)
+        if self.asr_engine == "vosk":
+            vosk_rec = self._ensure_vosk_commands_recognizer(phrases)
+            if vosk_rec is None:
+                return "", {"t_asr": 0.0, "grammar": True, "reason": "phase_a_grammar_empty"}
+            return self._transcribe_vosk_with_recognizer(vosk_rec, pcm16)
+        return self._transcribe_whisper_command(pcm16, candidate_phrases=phrases)
 
     def set_dialog_grammar(self, phrases: list[str] | None) -> None:
         if not phrases:
@@ -904,22 +1213,33 @@ class Recognizer:
         if not entries:
             return None, None, None
 
+        quick_phrases = []
+        if kind == "weapon":
+            _quick_mapping, quick_phrases = self._build_weapon_quick_equip_mapping(entries)
+        elif kind == "potion":
+            _quick_mapping, quick_phrases = self._build_potion_quick_use_mapping(entries)
+
         if self._whisper_commands_enabled():
-            mapping, _phrases = self._build_whisper_command_mapping(entries)
+            mapping, _phrases = self._build_whisper_command_mapping(entries, kind)
             return mapping, None, None
 
         mapping: dict[str, str] = {}
         phrases: list[str] = []
 
-        for formid, name in entries:
-            formid_hex = self._normalize_shout_formid(formid)
-            phrase = matching.normalize(str(name or ""))
-            if not formid_hex or not phrase:
+        for _raw_phrase, phrase, value in self._entry_phrase_values(entries, kind):
+            if not phrase:
                 continue
             if phrase in mapping:
                 continue
-            mapping[phrase] = formid_hex
+            mapping[phrase] = value
             phrases.append(phrase)
+
+        seen_phrases = set(phrases)
+        for raw in quick_phrases:
+            phrase = matching.normalize(raw)
+            if phrase and phrase not in seen_phrases:
+                seen_phrases.add(phrase)
+                phrases.append(phrase)
 
         if not phrases:
             return None, None, None
@@ -941,6 +1261,7 @@ class Recognizer:
         mapping, grammar_json, rec = self._build_item_grammar(entries, "weapon")
         self._allowed_weapon_entries = list(entries) if entries else None
         self._weapon_phrase_to_formid = mapping
+        self._weapon_quick_phrase_to_formid, self._weapon_quick_phrases = self._build_weapon_quick_equip_mapping(entries)
         self._vosk_weapon_grammar_json = grammar_json
         self._vosk_weapon_rec = rec
 
@@ -951,19 +1272,60 @@ class Recognizer:
         self._vosk_spell_grammar_json = grammar_json
         self._vosk_spell_rec = rec
 
-    def set_allowed_potions_entries(self, entries: list[tuple[str, str]] | None) -> None:
+    def set_allowed_potions_entries(self, entries: list[tuple] | None) -> None:
         mapping, grammar_json, rec = self._build_item_grammar(entries, "potion")
         self._allowed_potion_entries = list(entries) if entries else None
         self._potion_phrase_to_formid = mapping
+        self._potion_quick_phrase_to_formid, self._potion_quick_phrases = self._build_potion_quick_use_mapping(entries)
         self._vosk_potion_grammar_json = grammar_json
         self._vosk_potion_rec = rec
+
+    def _set_custom_commands(self, commands: dict[str, list[str]] | None) -> None:
+        mapping: dict[str, str] = {}
+        phrases: list[str] = []
+        for raw_phrase, values in (commands or {}).items():
+            phrase = str(raw_phrase or "").strip()
+            norm = matching.normalize(phrase)
+            cleaned = [str(value or "").strip() for value in values or []]
+            cleaned = [value for value in cleaned if value]
+            if not phrase or not norm or not cleaned or norm in mapping:
+                continue
+            mapping[norm] = json.dumps(cleaned, ensure_ascii=False)
+            phrases.append(phrase)
+
+        self._custom_command_phrase_to_commands = mapping
+        self._custom_command_phrases = self._unique_phrases(phrases)
+        self._vosk_commands_grammar_json = None
+        self._vosk_commands_rec = None
+
+    def has_custom_commands(self) -> bool:
+        return bool(self._custom_command_phrase_to_commands)
+
+    def has_command_category(self, kind: str) -> bool:
+        kind = str(kind or "").strip().lower()
+        if kind == "shout":
+            return bool(self._allowed_shout_entries)
+        if kind == "power":
+            return bool(self._power_phrase_to_formid)
+        if kind == "weapon":
+            return bool(self._weapon_phrase_to_formid or self._weapon_quick_phrase_to_formid)
+        if kind == "spell":
+            return bool(self._spell_phrase_to_formid)
+        if kind == "potion":
+            return bool(self._potion_phrase_to_formid or self._potion_quick_phrase_to_formid)
+        if kind == "custom":
+            return self.has_custom_commands()
+        if kind == "pause":
+            return bool(self._configured_phrase_strings("pause"))
+        return False
 
     def _entries_to_phrases(self, entries: list[tuple[str, str]] | None) -> list[str]:
         if not entries:
             return []
         seen: set[str] = set()
         out: list[str] = []
-        for _, name in entries:
+        for entry in entries:
+            _formid, name = self._entry_formid_name(entry)
             raw = str(name or "").strip()
             if not raw:
                 continue
@@ -974,13 +1336,49 @@ class Recognizer:
             out.append(raw)
         return out
 
+    def _entries_to_item_phrases(self, entries: list[tuple[str, str]] | None, kind: str) -> list[str]:
+        phrases: list[str] = []
+        for raw, _norm, _value in self._entry_phrase_values(entries, kind):
+            phrases.append(raw)
+        if kind == "weapon":
+            phrases.extend(self._weapon_quick_phrases)
+        elif kind == "potion":
+            phrases.extend(self._potion_quick_phrases)
+        return self._unique_phrases(phrases)
+
     def _command_mappings(self) -> dict[str, dict[str, str]]:
         return {
             "power": self._power_phrase_to_formid or {},
             "weapon": self._weapon_phrase_to_formid or {},
             "spell": self._spell_phrase_to_formid or {},
             "potion": self._potion_phrase_to_formid or {},
+            "custom": self._custom_command_phrase_to_commands or {},
+            "pause": {matching.normalize(phrase): "pause_commands" for phrase in self._configured_phrase_strings("pause")},
         }
+
+    def _base_item_diagnostic_mapping(self, entries: list[tuple[str, str]] | None) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        for entry in entries or []:
+            formid, name = self._entry_formid_name(entry)
+            formid_hex = self._normalize_shout_formid(formid)
+            phrase = matching.normalize(str(name or ""))
+            if formid_hex and phrase and phrase not in mapping:
+                mapping[phrase] = formid_hex
+        return mapping
+
+    def _command_diagnostic_mappings(self) -> dict[str, dict[str, str]]:
+        mappings = {kind: dict(values or {}) for kind, values in self._command_mappings().items()}
+
+        mappings["weapon"] = self._base_item_diagnostic_mapping(self._allowed_weapon_entries)
+        mappings["spell"] = self._base_item_diagnostic_mapping(self._allowed_spell_entries)
+
+        if self._weapon_quick_phrase_to_formid:
+            mappings.setdefault("weapon", {}).update(self._weapon_quick_phrase_to_formid)
+
+        if self._potion_quick_phrase_to_formid:
+            mappings.setdefault("potion", {}).update(self._potion_quick_phrase_to_formid)
+
+        return mappings
 
     def _attempted_command_categories(self, enabled_categories: list[str]) -> list[str]:
         mappings = self._command_mappings()
@@ -990,16 +1388,363 @@ class Recognizer:
                 attempted.append(kind)
         return attempted
 
+    def _whisper_fuzzy_threshold(self, norm: str) -> float:
+        return 0.90 if len(matching.tokens(norm)) <= 1 else 0.86
+
+    def _whisper_fuzzy_mapping_candidates(
+        self,
+        phrase_to_formid: dict[str, str] | None,
+        *,
+        kind: str | None = None,
+    ) -> dict[str, str]:
+        candidates: dict[str, str] = dict(phrase_to_formid or {})
+        if kind == "weapon" and self._weapon_quick_phrase_to_formid:
+            candidates.update(self._weapon_quick_phrase_to_formid)
+        elif kind == "potion" and self._potion_quick_phrase_to_formid:
+            candidates.update(self._potion_quick_phrase_to_formid)
+        return candidates
+
+    def _match_phrase_mapping_whisper_fuzzy(
+        self,
+        norm: str,
+        phrase_to_formid: dict[str, str] | None,
+        *,
+        kind: str | None = None,
+    ) -> tuple[str, float, str] | None:
+        norm = matching.normalize(norm)
+        if not norm:
+            return None
+
+        best_phrase = ""
+        best_value = ""
+        best_score = 0.0
+        second_score = 0.0
+
+        for phrase, value in self._whisper_fuzzy_mapping_candidates(phrase_to_formid, kind=kind).items():
+            phrase_norm = matching.normalize(phrase)
+            if not phrase_norm or max(len(norm), len(phrase_norm)) < 5:
+                continue
+
+            score = float(SequenceMatcher(None, norm, phrase_norm).ratio())
+            if score > best_score:
+                second_score = best_score
+                best_score = score
+                best_phrase = phrase_norm
+                best_value = str(value or "")
+            elif score > second_score:
+                second_score = score
+
+        if not best_phrase or not best_value:
+            return None
+        if best_score < self._whisper_fuzzy_threshold(norm):
+            return None
+        if second_score > 0.0 and (best_score - second_score) < 0.04:
+            return None
+        return best_value, best_score, best_phrase
+
+    def _whisper_command_fuzzy_threshold(self, norm: str, phrase_norm: str) -> float:
+        if min(len(norm), len(phrase_norm)) < 5:
+            return 0.95
+        if max(len(matching.tokens(norm)), len(matching.tokens(phrase_norm))) <= 1:
+            return 0.90
+        return 0.80
+
+    def _whisper_command_fuzzy_score(self, norm: str, phrase_norm: str) -> float:
+        if not norm or not phrase_norm:
+            return 0.0
+        return float(SequenceMatcher(None, norm, phrase_norm).ratio())
+
+    def _add_whisper_command_fuzzy_candidate(
+        self,
+        out: list[dict],
+        seen: set[tuple[str, str, str]],
+        *,
+        kind: str,
+        phrase: str,
+        value: str,
+    ) -> None:
+        phrase = str(phrase or "").strip()
+        value = str(value or "").strip()
+        phrase_norm = matching.normalize(phrase)
+        if not kind or not phrase or not phrase_norm or not value:
+            return
+        key = (kind, phrase_norm, value)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({"kind": kind, "phrase": phrase, "norm": phrase_norm, "value": value})
+
+    def _whisper_command_fuzzy_candidates(self, mappings: dict[str, dict[str, str]], attempted: list[str]) -> list[dict]:
+        out: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+        for kind in attempted:
+            mapping = mappings.get(kind) or {}
+            if not mapping:
+                continue
+
+            for phrase in self._command_candidate_phrases([kind]):
+                norm = matching.normalize(phrase)
+                value = mapping.get(norm)
+                if not value:
+                    value = self._match_item_hand_suffix(norm, mapping, kind=kind)
+                if not value and kind == "weapon":
+                    value = self._match_weapon_quick_equip(norm, kind=kind)
+                if not value and kind == "potion":
+                    value = self._match_potion_quick_use(norm, kind=kind)
+                self._add_whisper_command_fuzzy_candidate(out, seen, kind=kind, phrase=phrase, value=str(value or ""))
+
+            if kind == "weapon" and self.voice_equip_specify_hand:
+                for quick_raw in self._weapon_quick_phrases:
+                    quick_norm = matching.normalize(quick_raw)
+                    quick_value = (self._weapon_quick_phrase_to_formid or {}).get(quick_norm)
+                    formid_hex = str(quick_value or "").partition(ITEM_HAND_VALUE_SEP)[0]
+                    if not formid_hex:
+                        continue
+                    for hand, suffix in self._hand_suffix_variants():
+                        self._add_whisper_command_fuzzy_candidate(
+                            out,
+                            seen,
+                            kind=kind,
+                            phrase=f"{quick_raw} {suffix}",
+                            value=self._item_value(formid_hex, hand),
+                        )
+        return out
+
+    def _match_command_mapping_whisper_fuzzy(
+        self,
+        text: str,
+        mappings: dict[str, dict[str, str]],
+        attempted: list[str],
+    ) -> tuple[str, str, float, str, dict] | None:
+        if not self.whisper_command_fuzzy_match:
+            return None
+
+        norm = matching.normalize(text)
+        if not norm:
+            return None
+
+        best: dict | None = None
+        best_score = 0.0
+        second_score = 0.0
+
+        for candidate in self._whisper_command_fuzzy_candidates(mappings, attempted):
+            phrase_norm = str(candidate.get("norm") or "")
+            score = self._whisper_command_fuzzy_score(norm, phrase_norm)
+            if score <= 0.0:
+                continue
+            if score > best_score:
+                if best is not None and (candidate.get("kind"), candidate.get("value")) != (best.get("kind"), best.get("value")):
+                    second_score = best_score
+                best_score = score
+                best = candidate
+            elif best is not None and (candidate.get("kind"), candidate.get("value")) != (best.get("kind"), best.get("value")):
+                second_score = max(second_score, score)
+
+        if best is None:
+            return None
+
+        phrase_norm = str(best.get("norm") or "")
+        if best_score < self._whisper_command_fuzzy_threshold(norm, phrase_norm):
+            return None
+        if second_score > 0.0 and (best_score - second_score) < 0.04:
+            return None
+
+        meta = {
+            "result": "fuzzy",
+            "matched_phrase": str(best.get("phrase") or ""),
+        }
+        return (str(best.get("kind") or ""), str(best.get("value") or ""), float(best_score), text, meta)
+
     def _match_phrase_mapping(
         self,
         text: str,
         phrase_to_formid: dict[str, str] | None,
-    ) -> tuple[str, float, str] | None:
+        *,
+        kind: str | None = None,
+        whisper_fuzzy: bool = False,
+    ) -> tuple[str, float, str] | tuple[str, float, str, dict] | None:
         norm = matching.normalize(text)
         formid_hex = (phrase_to_formid or {}).get(norm)
         if formid_hex:
             return (formid_hex, 1.0, text)
+
+        fallback = self._match_item_hand_suffix(norm, phrase_to_formid, kind=kind)
+        if fallback:
+            return (fallback, 1.0, text)
+
+        quick = self._match_weapon_quick_equip(norm, kind=kind)
+        if quick:
+            return (quick, 1.0, text, {"result": "quick_equip"})
+        quick = self._match_potion_quick_use(norm, kind=kind)
+        if quick:
+            return (quick, 1.0, text, {"result": "quick_use"})
+
+        if whisper_fuzzy and self.whisper_command_fuzzy_match:
+            fuzzy = self._match_phrase_mapping_whisper_fuzzy(norm, phrase_to_formid, kind=kind)
+            if fuzzy:
+                value, score, phrase = fuzzy
+                return (value, score, text, {"result": "fuzzy", "matched_phrase": phrase})
         return None
+
+    def _match_weapon_quick_equip(self, norm: str, *, kind: str | None = None) -> str | None:
+        if kind != "weapon":
+            return None
+        return (self._weapon_quick_phrase_to_formid or {}).get(str(norm or ""))
+
+    def _match_potion_quick_use(self, norm: str, *, kind: str | None = None) -> str | None:
+        if kind != "potion":
+            return None
+        return (self._potion_quick_phrase_to_formid or {}).get(str(norm or ""))
+
+    def _match_item_hand_suffix(
+        self,
+        norm: str,
+        phrase_to_formid: dict[str, str] | None,
+        *,
+        kind: str | None = None,
+    ) -> str | None:
+        if kind not in ("weapon", "spell") or not self.voice_equip_specify_hand:
+            return None
+
+        parts = [part for part in str(norm or "").split(" ") if part]
+        if len(parts) < 2:
+            return None
+
+        for hand, suffix in self._hand_suffix_variants():
+            suffix_norm = matching.normalize(suffix)
+            suffix_parts = [part for part in suffix_norm.split(" ") if part]
+            if not suffix_parts or len(parts) <= len(suffix_parts):
+                continue
+            if parts[-len(suffix_parts):] != suffix_parts:
+                continue
+
+            base_norm = " ".join(parts[:-len(suffix_parts)])
+            base_value = (phrase_to_formid or {}).get(base_norm)
+            if (not base_value) and kind == "weapon":
+                base_value = (self._weapon_quick_phrase_to_formid or {}).get(base_norm)
+            if not base_value:
+                continue
+
+            formid_hex = str(base_value).partition(ITEM_HAND_VALUE_SEP)[0]
+            if formid_hex:
+                return self._item_value(formid_hex, hand)
+        return None
+
+    def _score_command_candidates(
+        self,
+        text: str,
+        mappings: dict[str, dict[str, str]],
+        attempted: list[str],
+    ) -> list[tuple[float, str, str, str]]:
+        norm = matching.normalize(text)
+        if not norm:
+            return []
+
+        text_tokens = set(matching.tokens(norm))
+        scored: list[tuple[float, str, str, str]] = []
+        seen: set[tuple[str, str]] = set()
+
+        for kind in attempted:
+            if kind == "hand_suffixes":
+                continue
+
+            for phrase, formid_hex in (mappings.get(kind) or {}).items():
+                phrase_norm = matching.normalize(phrase)
+                if not phrase_norm:
+                    continue
+
+                key = (kind, phrase_norm)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                phrase_tokens = set(matching.tokens(phrase_norm))
+                if not phrase_tokens:
+                    continue
+
+                score = len(text_tokens & phrase_tokens) / len(phrase_tokens)
+                if phrase_norm == norm:
+                    score = 1.0
+
+                if score <= 0.0:
+                    continue
+
+                scored.append((float(score), kind, phrase_norm, str(formid_hex or "")))
+
+        scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+        return scored
+
+    def _format_scored_command_candidates(self, scored: list[tuple[float, str, str, str]]) -> str:
+        label_by_kind = {
+            "weapon": "Weapons",
+            "spell": "Spells",
+            "power": "Powers",
+            "potion": "Potions",
+            "custom": "CustomCommands",
+            "pause": "PauseCommands",
+            "shout": "Shouts",
+        }
+        grouped: dict[str, list[tuple[float, str, str, str]]] = {}
+        order: list[str] = []
+
+        for item in scored:
+            kind = item[1]
+            if kind not in grouped:
+                grouped[kind] = []
+                order.append(kind)
+            grouped[kind].append(item)
+
+        groups: list[str] = []
+        for kind in order:
+            parts = []
+            for score, _kind, phrase, _formid_hex in grouped[kind]:
+                parts.append(f"{json.dumps(phrase, ensure_ascii=False)} {score:.3f}")
+            label = label_by_kind.get(kind, kind.capitalize() + "s")
+            groups.append(f"{label} count={len(grouped[kind])} [" + ", ".join(parts) + "]")
+
+        return "Candidates: " + "; ".join(groups)
+
+    def _best_phrase_mapping_diagnostic(
+        self,
+        text: str,
+        phrase_to_formid: dict[str, str] | None,
+        *,
+        kind: str | None = None,
+    ) -> dict:
+        kind_label = kind or "command"
+
+        if not matching.normalize(text):
+            return {"reason": "empty_text", "score": 0.0}
+
+        scored = self._score_command_candidates(text, {kind_label: phrase_to_formid or {}}, [kind_label])
+        if not scored:
+            return {"reason": "no_candidate", "score": 0.0}
+
+        out: dict = {
+            "reason": "no_exact_match",
+            "score": float(scored[0][0]),
+            "candidates": self._format_scored_command_candidates(scored),
+        }
+        if len(scored) == 1 and scored[0][3]:
+            out["formid"] = scored[0][3]
+        return out
+
+    def _best_command_diagnostic(self, text: str, mappings: dict[str, dict[str, str]], attempted: list[str]) -> dict:
+        if not matching.normalize(text):
+            return {"reason": "empty_text", "score": 0.0}
+
+        scored = self._score_command_candidates(text, mappings, attempted)
+        if not scored:
+            return {"reason": "no_candidate", "score": 0.0}
+
+        out: dict = {
+            "reason": "no_exact_match",
+            "score": float(scored[0][0]),
+            "candidates": self._format_scored_command_candidates(scored),
+        }
+        if len(scored) == 1 and scored[0][3]:
+            out["formid"] = scored[0][3]
+        return out
 
     def _transcribe_command_mapping(self, pcm16: np.ndarray, *, whisper: bool, vosk_rec=None, candidate_phrases: list[str] | None = None) -> tuple[str, dict]:
         if whisper:
@@ -1012,6 +1757,7 @@ class Recognizer:
         phrase_to_formid: dict[str, str] | None,
         *,
         candidate_phrases: list[str] | None = None,
+        kind: str | None = None,
         whisper: bool,
         vosk_rec=None,
         error_tag: str,
@@ -1026,7 +1772,7 @@ class Recognizer:
 
         try:
             text, _stats = self._transcribe_command_mapping(pcm16, whisper=whisper, vosk_rec=vosk_rec, candidate_phrases=candidate_phrases)
-            return self._match_phrase_mapping(text, phrase_to_formid)
+            return self._match_phrase_mapping(text, phrase_to_formid, kind=kind, whisper_fuzzy=whisper)
         except Exception as e:
             log_error(f"[{error_tag}][ERR] Recognition failed: {e}")
             return None
@@ -1036,6 +1782,7 @@ class Recognizer:
         pcm16: np.ndarray,
         phrase_to_formid: dict[str, str] | None,
         *,
+        kind: str | None = None,
         phrases_count: int,
         candidate_phrases: list[str] | None = None,
         whisper: bool,
@@ -1059,12 +1806,12 @@ class Recognizer:
 
         try:
             text, stats = self._transcribe_command_mapping(pcm16, whisper=whisper, vosk_rec=vosk_rec, candidate_phrases=candidate_phrases)
-            dbg.update({k: v for k, v in stats.items() if k not in ("t_wav", "t_asr", "t_whisper", "t_total_io", "wav_path")})
-            result = self._match_phrase_mapping(text, phrase_to_formid)
+            dbg.update({k: v for k, v in stats.items() if k not in ("t_wav", "t_total_io", "wav_path")})
+            result = self._match_phrase_mapping(text, phrase_to_formid, kind=kind, whisper_fuzzy=whisper)
             if result is None:
                 dbg["text"] = text
-                if str(dbg.get("reason") or "") in ("ok", ""):
-                    dbg["reason"] = "no_match"
+                if str(dbg.get("reason") or "") in ("init", "ok", ""):
+                    dbg.update(self._best_phrase_mapping_diagnostic(text, phrase_to_formid, kind=kind))
                 return None, dbg
             dbg["reason"] = "ok"
             return result, dbg
@@ -1110,15 +1857,25 @@ class Recognizer:
         return int(len(entries)), int(len(phrases)), phrases
 
     def get_weapon_grammar_info(self) -> tuple[int, int, list[str]]:
-        if self._whisper_commands_enabled():
-            return 0, 0, []
         entries = self._allowed_weapon_entries or []
         phrases = self._entries_to_phrases(entries)
         return int(len(entries)), int(len(phrases)), phrases
 
-    def get_spell_grammar_info(self) -> tuple[int, int, list[str]]:
-        if self._whisper_commands_enabled():
+    def get_weapon_quick_grammar_info(self) -> tuple[int, int, list[str]]:
+        phrases = self._unique_phrases(self._weapon_quick_phrases)
+        return int(len(self._weapon_quick_phrase_to_formid or {})), int(len(phrases)), phrases
+
+    def get_hand_suffix_grammar_info(self) -> tuple[int, int, list[str]]:
+        if not self.voice_equip_specify_hand:
             return 0, 0, []
+        phrases = self._unique_phrases([
+            suffix
+            for hand in ("right", "left", "both")
+            for suffix in self.voice_equip_hand_suffixes.get(hand, [])
+        ])
+        return int(len(phrases)), int(len(phrases)), phrases
+
+    def get_spell_grammar_info(self) -> tuple[int, int, list[str]]:
         entries = self._allowed_spell_entries or []
         phrases = self._entries_to_phrases(entries)
         return int(len(entries)), int(len(phrases)), phrases
@@ -1130,11 +1887,19 @@ class Recognizer:
         phrases = self._entries_to_phrases(entries)
         return int(len(entries)), int(len(phrases)), phrases
 
+    def get_potion_quick_grammar_info(self) -> tuple[int, int, list[str]]:
+        phrases = self._unique_phrases(self._potion_quick_phrases)
+        return int(len(self._potion_quick_phrase_to_formid or {})), int(len(phrases)), phrases
+
+    def get_pause_grammar_info(self) -> tuple[int, int, list[str]]:
+        phrases = self._unique_phrases(self._configured_phrase_strings("pause"))
+        return int(len(phrases)), int(len(phrases)), phrases
+
     def recognize_non_shout_commands_debug(
         self,
         pcm16: np.ndarray,
         enabled_categories: list[str],
-    ) -> tuple[tuple[str, str, float, str] | None, dict]:
+    ) -> tuple[tuple[str, str, float, str, dict] | None, dict]:
         dbg: dict = {
             "reason": "init",
             "attempted": [],
@@ -1144,9 +1909,6 @@ class Recognizer:
             dbg["reason"] = "empty_audio"
             return None, dbg
 
-        if not self._whisper_commands_enabled():
-            dbg["reason"] = "whisper_commands_disabled"
-            return None, dbg
         mappings = self._command_mappings()
         attempted = self._attempted_command_categories(enabled_categories)
         dbg["attempted"] = attempted
@@ -1156,27 +1918,58 @@ class Recognizer:
 
         try:
             candidate_phrases = self._command_candidate_phrases(attempted)
-            text, stats = self._transcribe_whisper_command(pcm16, candidate_phrases=candidate_phrases)
-            dbg.update({k: v for k, v in stats.items() if k not in ("t_wav", "t_asr", "t_whisper", "t_total_io", "wav_path")})
+            if self._whisper_commands_enabled():
+                text, stats = self._transcribe_whisper_command(pcm16, candidate_phrases=candidate_phrases)
+            else:
+                vosk_rec = self._ensure_vosk_commands_recognizer(candidate_phrases)
+                if vosk_rec is None:
+                    dbg["reason"] = "phase_a_grammar_empty"
+                    return None, dbg
+                text, stats = self._transcribe_vosk_with_recognizer(vosk_rec, pcm16)
+            dbg.update({k: v for k, v in stats.items() if k not in ("t_wav", "t_total_io", "wav_path")})
             dbg["text"] = text
             norm = matching.normalize(text)
             for kind in attempted:
-                formid_hex = mappings[kind].get(norm)
-                if formid_hex:
+                match = self._match_phrase_mapping(text, mappings[kind], kind=kind, whisper_fuzzy=False)
+                if match:
+                    formid_hex, score, raw_text = match[:3]
+                    meta = match[3] if len(match) > 3 and isinstance(match[3], dict) else {}
                     dbg["reason"] = "ok"
-                    return (kind, formid_hex, 1.0, text), dbg
-            if str(dbg.get("reason") or "") in ("ok", ""):
-                dbg["reason"] = "no_match"
+                    if meta.get("result"):
+                        dbg["match_result"] = meta.get("result")
+                    if meta.get("matched_phrase"):
+                        dbg["matched_phrase"] = meta.get("matched_phrase")
+                    return (kind, formid_hex, score, raw_text, meta), dbg
+
+            if self._whisper_commands_enabled() and self.whisper_command_fuzzy_match:
+                fuzzy = self._match_command_mapping_whisper_fuzzy(text, mappings, attempted)
+                if fuzzy:
+                    kind, formid_hex, score, raw_text, meta = fuzzy
+                    dbg["reason"] = "ok"
+                    dbg["match_result"] = "fuzzy"
+                    if meta.get("matched_phrase"):
+                        dbg["matched_phrase"] = meta.get("matched_phrase")
+                    return (kind, formid_hex, score, raw_text, meta), dbg
+
+            if str(dbg.get("reason") or "") in ("init", "ok", ""):
+                dbg.update(self._best_command_diagnostic(text, self._command_diagnostic_mappings(), attempted))
             return None, dbg
         except Exception as e:
             dbg["reason"] = "error"
             dbg["error"] = str(e)
             return None, dbg
 
-    def _recognize_item(self, pcm16: np.ndarray, vosk_rec, phrase_to_formid: dict[str, str] | None) -> tuple[str, float, str] | None:
+    def _recognize_item(
+        self,
+        pcm16: np.ndarray,
+        vosk_rec,
+        phrase_to_formid: dict[str, str] | None,
+        kind: str,
+    ) -> tuple[str, float, str] | None:
         return self._recognize_phrase_mapping(
             pcm16,
             phrase_to_formid,
+            kind=kind,
             whisper=False,
             vosk_rec=vosk_rec,
             error_tag="ITEM",
@@ -1187,11 +1980,13 @@ class Recognizer:
         pcm16: np.ndarray,
         phrase_to_formid: dict[str, str] | None,
         candidate_phrases: list[str] | None,
+        kind: str,
     ) -> tuple[str, float, str] | None:
         return self._recognize_phrase_mapping(
             pcm16,
             phrase_to_formid,
             candidate_phrases=candidate_phrases,
+            kind=kind,
             whisper=True,
             error_tag="ITEM",
         )
@@ -1201,27 +1996,30 @@ class Recognizer:
             return self._recognize_item_whisper(
                 pcm16,
                 self._weapon_phrase_to_formid,
-                self._entries_to_phrases(self._allowed_weapon_entries),
+                self._entries_to_item_phrases(self._allowed_weapon_entries, "weapon"),
+                "weapon",
             )
-        return self._recognize_item(pcm16, self._vosk_weapon_rec, self._weapon_phrase_to_formid)
+        return self._recognize_item(pcm16, self._vosk_weapon_rec, self._weapon_phrase_to_formid, "weapon")
 
     def recognize_spell(self, pcm16: np.ndarray) -> tuple[str, float, str] | None:
         if self._whisper_commands_enabled():
             return self._recognize_item_whisper(
                 pcm16,
                 self._spell_phrase_to_formid,
-                self._entries_to_phrases(self._allowed_spell_entries),
+                self._entries_to_item_phrases(self._allowed_spell_entries, "spell"),
+                "spell",
             )
-        return self._recognize_item(pcm16, self._vosk_spell_rec, self._spell_phrase_to_formid)
+        return self._recognize_item(pcm16, self._vosk_spell_rec, self._spell_phrase_to_formid, "spell")
 
     def recognize_potion(self, pcm16: np.ndarray) -> tuple[str, float, str] | None:
         if self._whisper_commands_enabled():
             return self._recognize_item_whisper(
                 pcm16,
                 self._potion_phrase_to_formid,
-                self._entries_to_phrases(self._allowed_potion_entries),
+                self._entries_to_item_phrases(self._allowed_potion_entries, "potion"),
+                "potion",
             )
-        return self._recognize_item(pcm16, self._vosk_potion_rec, self._potion_phrase_to_formid)
+        return self._recognize_item(pcm16, self._vosk_potion_rec, self._potion_phrase_to_formid, "potion")
 
     def recognize_shout(self, pcm16: np.ndarray) -> tuple[str, str, int, float, str] | None:
         if pcm16 is None or pcm16.size == 0:
@@ -1262,6 +2060,7 @@ class Recognizer:
             return self._recognize_phrase_mapping_debug(
                 pcm16,
                 self._power_phrase_to_formid,
+                kind="power",
                 phrases_count=len(self._power_phrase_to_formid or {}),
                 candidate_phrases=self._entries_to_phrases(self._allowed_power_entries),
                 whisper=True,
@@ -1269,6 +2068,7 @@ class Recognizer:
         return self._recognize_phrase_mapping_debug(
             pcm16,
             self._power_phrase_to_formid,
+            kind="power",
             phrases_count=len(self._power_phrase_to_formid or {}),
             whisper=False,
             vosk_rec=self._vosk_power_rec,
@@ -1283,13 +2083,16 @@ class Recognizer:
             return None, self._enrich_shout_dbg({"reason": "shouts_disabled"})
 
         try:
+            t_asr0 = time.perf_counter()
             if hasattr(recognizer, "recognize_debug"):
                 (plugin, baseid, power, score, raw_text), dbg = recognizer.recognize_debug(pcm16, sr=SR)
             else:
                 plugin, baseid, power, score, raw_text = recognizer.recognize(pcm16, sr=SR)
                 dbg = {"reason": "ok" if (plugin and baseid and power > 0) else "no_match"}
+            t_asr1 = time.perf_counter()
 
             dbg = self._enrich_shout_dbg(dbg)
+            dbg.setdefault("t_asr", t_asr1 - t_asr0)
 
             if plugin and baseid and power > 0:
                 return (plugin, baseid, power, float(score), str(raw_text)), dbg

@@ -28,7 +28,14 @@ namespace DragonbornVoiceControl
         bool enableWeapons{ false };
         bool enableSpells{ false };
         bool enablePotions{ false };
+        bool quickUsePotions{ true };
+        bool useBestPotion{ true };
+        bool specifyHand{ true };
+        bool quickEquip{ true };
+        bool enableKeyConsole{ false };
+        bool enablePauseResumePhrases{ false };
         bool debug{ false };
+        bool debugUnrecognized{ true };
         bool saveWavCaptures{ false };
     };
 
@@ -41,6 +48,12 @@ namespace DragonbornVoiceControl
     bool IsWeaponsEnabled();
     bool IsSpellsEnabled();
     bool IsPotionsEnabled();
+    bool IsQuickUsePotionsEnabled();
+    bool IsUseBestPotionEnabled();
+    bool IsSpecifyHandEnabled();
+    bool IsQuickEquipEnabled();
+    bool IsKeyConsoleEnabled();
+    bool IsPauseResumePhrasesEnabled();
     bool IsDebugEnabled();
     bool IsSaveWavCapturesEnabled();
 

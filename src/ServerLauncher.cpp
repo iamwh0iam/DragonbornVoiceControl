@@ -285,6 +285,12 @@ bool ServerLauncher::StartFromIni(const std::wstring& dataDir, const std::wstrin
     const std::wstring resolvedIni = ResolveRealPathByHandle(iniPath);
     const std::wstring realIni = !resolvedIni.empty() ? resolvedIni : iniPath;
 
+    // app.zip belongs to the main mod and must be resolved through MO2's virtual Data path,
+    // independently from the runtime exe real path.
+    const std::wstring appPick = JoinPath(JoinPath(iniDir, L"DVCRuntime"), L"app.zip");
+    const std::wstring resolvedApp = ResolveRealPathByHandle(appPick);
+    const std::wstring realApp = !resolvedApp.empty() ? resolvedApp : appPick;
+
     std::vector<std::wstring> exeCands = {
         JoinPath(JoinPath(gameRoot, L"mods"), L"Dragonborn Voice Control\\DVCRuntime\\DVCRuntime.exe"),
         JoinPath(JoinPath(gameRoot, L"mods"), L"Dragonborn Voice Control\\DVCRuntime\\DragonbornVoiceControlServer.exe"),
@@ -338,11 +344,16 @@ bool ServerLauncher::StartFromIni(const std::wstring& dataDir, const std::wstrin
 
         std::wstring realPyDir = DirOf(realPython);
         runtimeDir = DirOf(realPyDir);
-        std::wstring script = JoinPath(runtimeDir, L"main.py");
+        std::wstring script = JoinPath(runtimeDir, L"bootstrap.py");
+        if (!PathFileExistsW(script.c_str())) {
+            script = JoinPath(runtimeDir, L"main.py");
+        }
 
         AppendLaunchLog(launchLogs, L"LAUNCH AUTODETECT: dataDir=%s iniPath=%s", dataDir.c_str(), iniPath.c_str());
         AppendLaunchLog(launchLogs, L" INI_PICK: %s", iniPath.c_str());
         AppendLaunchLog(launchLogs, L" INI_REAL: %s", realIni.c_str());
+        AppendLaunchLog(launchLogs, L" APP_PICK: %s", appPick.c_str());
+        AppendLaunchLog(launchLogs, L" APP_REAL: %s", realApp.c_str());
         AppendLaunchLog(launchLogs, L" MODE: PY");
         AppendLaunchLog(launchLogs, L" PY_PICK: %s", python.c_str());
         AppendLaunchLog(launchLogs, L" PY_REAL: %s", realPython.c_str());
@@ -351,7 +362,7 @@ bool ServerLauncher::StartFromIni(const std::wstring& dataDir, const std::wstrin
 
         AppendLaunchLog(launchLogs, L"LAUNCH ATTEMPT (PY): app=%s script=%s", realPython.c_str(), script.c_str());
 
-        std::wstring cmd = L"\"" + realPython + L"\" -u \"" + script + L"\" --ini \"" + realIni + L"\"";
+        std::wstring cmd = L"\"" + realPython + L"\" -u \"" + script + L"\" --ini \"" + realIni + L"\" --app \"" + realApp + L"\"";
         std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
         cmdBuf.push_back(L'\0');
 
@@ -398,6 +409,8 @@ bool ServerLauncher::StartFromIni(const std::wstring& dataDir, const std::wstrin
     AppendLaunchLog(launchLogs, L"LAUNCH AUTODETECT: dataDir=%s iniPath=%s", dataDir.c_str(), iniPath.c_str());
     AppendLaunchLog(launchLogs, L" INI_PICK: %s", iniPath.c_str());
     AppendLaunchLog(launchLogs, L" INI_REAL: %s", realIni.c_str());
+    AppendLaunchLog(launchLogs, L" APP_PICK: %s", appPick.c_str());
+    AppendLaunchLog(launchLogs, L" APP_REAL: %s", realApp.c_str());
     AppendLaunchLog(launchLogs, L" MODE: EXE");
     AppendLaunchLog(launchLogs, L" EXE_PICK: %s", exe.c_str());
     AppendLaunchLog(launchLogs, L" EXE_REAL: %s", realExe.c_str());
@@ -412,7 +425,7 @@ bool ServerLauncher::StartFromIni(const std::wstring& dataDir, const std::wstrin
 
     AppendLaunchLog(launchLogs, L"LAUNCH ATTEMPT (EXE): app=%s", launchExe.c_str());
 
-    std::wstring cmd = L"\"" + launchExe + L"\" --ini \"" + realIni + L"\"";
+    std::wstring cmd = L"\"" + launchExe + L"\" --ini \"" + realIni + L"\" --app \"" + realApp + L"\"";
     std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
     cmdBuf.push_back(L'\0');
 

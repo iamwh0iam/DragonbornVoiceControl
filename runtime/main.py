@@ -10,10 +10,25 @@ from rich.align import Align
 
 # ---------------- paths ----------------
 IS_FROZEN = bool(getattr(sys, "frozen", False))
-if IS_FROZEN:
+
+_runtime_dir_env = os.environ.get("DVC_RUNTIME_DIR", "").strip()
+_app_dir_env = os.environ.get("DVC_APP_DIR", "").strip()
+_app_zip_env = os.environ.get("DVC_APP_ZIP", "").strip()
+
+if _runtime_dir_env:
+    RUNTIME_DIR = Path(_runtime_dir_env).expanduser().resolve()
+elif IS_FROZEN:
     RUNTIME_DIR = Path(sys.executable).resolve().parent
 else:
     RUNTIME_DIR = Path(__file__).resolve().parent
+
+if _app_dir_env:
+    APP_DIR = Path(_app_dir_env).expanduser().resolve()
+elif _app_zip_env:
+    APP_DIR = Path(_app_zip_env).expanduser().resolve().parent
+else:
+    APP_DIR = RUNTIME_DIR
+
 MOD_DIR = RUNTIME_DIR.parent
 
 PY_DIR = RUNTIME_DIR / "python312"
@@ -22,6 +37,8 @@ PY_EXE = PY_DIR / "python.exe"
 CACHE_ROOT_ENV = os.environ.get("DVC_CACHE_DIR", "").strip()
 CACHE_ROOT     = Path(CACHE_ROOT_ENV).expanduser().resolve() if CACHE_ROOT_ENV else RUNTIME_DIR
 os.environ["DVC_CACHE_DIR"] = str(CACHE_ROOT)
+os.environ.setdefault("DVC_RUNTIME_DIR", str(RUNTIME_DIR))
+os.environ.setdefault("DVC_APP_DIR", str(APP_DIR))
 CACHE          = CACHE_ROOT / "caches"
 LOG_PATH_00   = RUNTIME_DIR / "dvc_server00.log"
 LOG_PATH_01   = RUNTIME_DIR / "dvc_server01.log"
@@ -48,10 +65,13 @@ os.environ["TEMP"] = str(CACHE / "tmp")
 os.environ["XDG_CACHE_HOME"] = str(CACHE)
 
 # ---------------- sys.path + import config (AFTER env) ----------------
-if str(RUNTIME_DIR) not in sys.path:
-    sys.path.insert(0, str(RUNTIME_DIR))
+# app.zip is inserted by bootstrap. APP_DIR is also added for source/unpacked app runs.
+for _p in (APP_DIR, RUNTIME_DIR):
+    _ps = str(_p)
+    if _ps not in sys.path:
+        sys.path.insert(0, _ps)
 
-from log_utils import setup_timestamped_print, log_warn, log_error, set_log_file
+from log_utils import setup_timestamped_print, log_info, log_debug,log_warn, log_error, set_log_file, set_log_level
 
 setup_timestamped_print()
 
@@ -131,7 +151,17 @@ def _ini_from_argv(argv: list[str]) -> Path | None:
     return None
 
 
+def _ini_from_env() -> Path | None:
+    raw = os.environ.get("DVC_INI", "").strip()
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return p if p.exists() else None
+
+
 def _iter_default_ini_candidates():
+    yield from (APP_DIR.parent / name for name in INI_FILENAMES)
+    yield from (APP_DIR / name for name in INI_FILENAMES)
     yield from (MOD_DIR / "SKSE" / "Plugins" / name for name in INI_FILENAMES)
     yield from (MOD_DIR / name for name in INI_FILENAMES)
 
@@ -143,6 +173,10 @@ def _iter_fallback_ini_candidates(max_levels: int = 6):
 
 
 def _find_ini() -> Path | None:
+    ini_env = _ini_from_env()
+    if ini_env is not None:
+        return ini_env
+
     ini_arg = _ini_from_argv(sys.argv)
     if ini_arg is not None:
         return ini_arg
@@ -218,6 +252,8 @@ def _ensure_vosk_models_for_settings(asr: dict) -> str:
 
 
 def _export_runtime_env(cfg, asr: dict, backend_eff: str, cuda: str, vosk_model_path: str, *, cuda_specified: bool) -> None:
+    os.environ["DVC_LOG_LEVEL"] = str(cfg.log_level)
+
     os.environ["DVC_BACKEND"] = backend_eff
     if cuda_specified:
         os.environ["DVC_CUDA"] = cuda
@@ -251,13 +287,16 @@ def _export_runtime_env(cfg, asr: dict, backend_eff: str, cuda: str, vosk_model_
     os.environ["DVC_WHISPER_CMD_MAX_WORDS"] = str(cfg.whisper_command_max_words)
     os.environ["DVC_WHISPER_CMD_WORD_SLACK"] = str(cfg.whisper_command_word_slack)
 
-    os.environ["DVC_MIN_SCORE"] = str(cfg.min_score)
-    os.environ["DVC_MIN_DIFF"] = str(cfg.min_diff)
+    os.environ["DVC_DIALOGUE_SELECT_SCORE_THR"] = str(cfg.dialogue_select_score_thr)
+    os.environ["DVC_DIALOGUE_SELECT_MIN_DIFF"] = str(cfg.dialogue_select_min_diff)
 
-    os.environ["DVC_MODE"] = str(cfg.mode)
-    os.environ["DVC_SetMic"] = str(cfg.SetMic)
-    os.environ["DVC_PTT_KEY"] = str(cfg.ptt_key)
-    os.environ["DVC_PTT_SEC"] = str(cfg.ptt_sec)
+    os.environ["DVC_VOICE_MODE"] = str(cfg.mode)
+    os.environ["DVC_VOICE_MODE_SET_MIC"] = str(cfg.SetMic)
+    os.environ["DVC_VOICE_MODE_HOTKEY"] = str(cfg.ptt_key)
+    if cfg.ptt_sec is None:
+        os.environ.pop("DVC_VOICE_MODE_SECONDS", None)
+    else:
+        os.environ["DVC_VOICE_MODE_SECONDS"] = str(cfg.ptt_sec)
 
     os.environ["DVC_VAD_START_MS"] = str(cfg.vad_start_ms)
     os.environ["DVC_VAD_END_SIL_MS"] = str(cfg.vad_end_sil_ms)
@@ -279,9 +318,17 @@ def _export_runtime_env(cfg, asr: dict, backend_eff: str, cuda: str, vosk_model_
 
     os.environ["DVC_CLOSE_PHRASES"] = str(cfg.close_phrases)
     os.environ["DVC_CLOSE_SCORE_THR"] = str(cfg.close_score_thr)
+    os.environ["DVC_PAUSE_PHRASES"] = str(cfg.pause_phrases)
+    os.environ["DVC_RESUME_PHRASES"] = str(cfg.resume_phrases)
 
     os.environ["DVC_OPEN_ENABLE_OPEN"] = "1" if bool(cfg.open_enable_open) else "0"
     os.environ["DVC_CLOSE_ENABLE_VOICE"] = "1" if bool(cfg.close_enable_voice) else "0"
+    os.environ["DVC_VOICE_EQUIP_SPECIFY_HAND"] = "1" if bool(cfg.voice_equip_specify_hand) else "0"
+    os.environ["DVC_VOICE_EQUIP_RIGHT_HAND_SUFFIX"] = str(cfg.voice_equip_right_hand_suffix)
+    os.environ["DVC_VOICE_EQUIP_LEFT_HAND_SUFFIX"] = str(cfg.voice_equip_left_hand_suffix)
+    os.environ["DVC_VOICE_EQUIP_BOTH_HANDS_SUFFIX"] = str(cfg.voice_equip_both_hands_suffix)
+    os.environ["DVC_VOICE_EQUIP_QUICK_EQUIP"] = "1" if bool(cfg.voice_equip_quick_equip) else "0"
+    os.environ["DVC_VOICE_EQUIP_EQUIPMENT_TYPES"] = str(cfg.voice_equip_equipment_types)
 
     os.environ["DVC_SHOUTS_ENABLE"] = "1" if bool(cfg.shouts_enable) else "0"
     os.environ["DVC_SHOUTS_BACKEND"] = str(asr["shouts_backend"])
@@ -298,7 +345,7 @@ def _run() -> None:
     if not IS_FROZEN:
         if not PY_EXE.exists():
             log_error(f"[FATAL] portable python missing: {PY_EXE}")
-            print("Press Enter…")
+            log_info("Press Enter…")
             input()
             sys.exit(1)
 
@@ -307,6 +354,8 @@ def _run() -> None:
 
     ini = _find_ini()
     cfg = load_config(ini) if ini else ServerConfig()
+    if not set_log_level(cfg.log_level) or cfg.log_level_invalid:
+        log_warn("[INI][WARN] invalid LogLevel value; using debug")
 
     asr = _resolve_asr_settings(cfg)
 
@@ -333,8 +382,6 @@ def _run() -> None:
             backend_eff = "cpu"
 
     vosk_model_path = ""
-    #if asr["asr_engine"] == "vosk":
-       #print("[VOSK] model selection deferred until client language is received", flush=True)
     _print_ini_cfg(ini, cfg, backend_req, backend_eff, cuda, cuda_specified)
 
     _export_runtime_env(cfg, asr, backend_eff, cuda, vosk_model_path, cuda_specified=cuda_specified)
@@ -363,17 +410,17 @@ def _handle_audio_device_check() -> bool:
 
         if default_in is not None and default_in >= 0:
             d = sd.query_devices(default_in)
-            print(f"\nCurrent default input: [{default_in}] {d['name']}")
+            log_info(f"\nCurrent default input: [{default_in}] {d['name']}")
         else:
-            print("\nCurrent default input: (not set)\n")
-        print("Hint: in ini you can set [Mode] SetMic=<index>.\n")
-        print("Input devices (recording):")
+            log_info("\nCurrent default input: (not set)\n")
+        log_info("Hint: in ini you can set [Voice Mode] SetMic=<index>.\n")
+        log_info("Input devices (recording):")
 
         for i, d in enumerate(devices):
             if d.get("max_input_channels", 0) > 0:
                 mark = "  <-- default input" if i == default_in else ""
                 hostapi = sd.query_hostapis(d.get("hostapi", 0)).get("name", "?")
-                print(
+                log_info(
                     f"[{i}] {d.get('name', '?')} | hostapi: {hostapi} | "
                     f"in_ch: {d.get('max_input_channels', 0)} | "
                     f"default_sr: {d.get('default_samplerate', 0)}{mark}"
@@ -432,7 +479,7 @@ def _relaunch_with_portable_python():
     if IS_FROZEN:
         return False
     if Path(sys.executable).resolve() != PY_EXE.resolve():
-        print(f"[BOOT] relaunching with portable python: {PY_EXE}", flush=True)
+        log_info(f"[BOOT] relaunching with portable python: {PY_EXE}")
         cmd = [str(PY_EXE), str(Path(__file__).resolve()), *sys.argv[1:]]
         subprocess.Popen(cmd, cwd=str(RUNTIME_DIR), env=os.environ.copy())
         return True
@@ -447,9 +494,10 @@ def _argv_get(name: str) -> str | None:
 
 def _print_ini_cfg(ini_path: Path | None, cfg, backend_req: str, backend_eff: str, cuda: str, cuda_specified: bool):
     ini_str = str(ini_path) if ini_path else "(none)"
-    print(f"[INI] file={ini_str}", flush=True)
+    log_debug(f"[INI] file={ini_str}")
     parts: list[str] = []
 
+    parts.append(f"LogLevel={cfg.log_level}")
     parts.append(f"ASR.Engine={cfg.asr_engine}")
 
     if cfg.asr_engine == "whisper":
@@ -466,9 +514,9 @@ def _print_ini_cfg(ini_path: Path | None, cfg, backend_req: str, backend_eff: st
         if str(cfg.vosk_model).strip():
             parts.append(f"Vosk.Model={cfg.vosk_model}")
 
-    parts.append(f"Mode.Mode={cfg.mode}")
+    parts.append(f"Voice Mode.Mode={cfg.mode}")
     if str(cfg.SetMic).strip():
-        parts.append(f"Mode.SetMic={cfg.SetMic}")
+        parts.append(f"Voice Mode.SetMic={cfg.SetMic}")
 
     if cfg.mode == "vad":
         parts.append(f"VAD.Threshold={cfg.vad_thr}")
@@ -479,13 +527,14 @@ def _print_ini_cfg(ini_path: Path | None, cfg, backend_req: str, backend_eff: st
         parts.append(f"VAD.MinUttSec={cfg.vad_min_utt}")
         parts.append(f"VAD.MaxWaitSec={cfg.vad_max_wait}")
     elif cfg.mode == "ptt":
-        parts.append(f"PTT.Hotkey={cfg.ptt_key}")
-        parts.append(f"PTT.Seconds={cfg.ptt_sec}")
+        parts.append(f"Voice Mode.Hotkey={cfg.ptt_key}")
+        if cfg.ptt_sec is not None:
+            parts.append(f"Voice Mode.Seconds={cfg.ptt_sec}")
 
-    parts.append(f"Matching.MinScore={cfg.min_score}")
-    parts.append(f"Matching.MinDiff={cfg.min_diff}")
+    parts.append(f"Dialogue Select.ScoreThreshold={cfg.dialogue_select_score_thr}")
+    parts.append(f"Dialogue Select.MinDiff={cfg.dialogue_select_min_diff}")
 
-    print(f"[INI] {' | '.join(parts)}", flush=True)
+    log_debug(f"[INI] {' | '.join(parts)}")
 
 if __name__ == "__main__":
     try:

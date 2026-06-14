@@ -8,6 +8,7 @@
 #include "ShoutsInternal.h"
 
 #include <algorithm>
+#include <atomic>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -50,6 +51,18 @@ namespace DragonbornVoiceControl
         });
     }
 
+    static bool EntriesEqual(const std::vector<PotionEntry>& a, const std::vector<PotionEntry>& b)
+    {
+        if (a.size() != b.size()) return false;
+        return std::equal(a.begin(), a.end(), b.begin(), [](const PotionEntry& lhs, const PotionEntry& rhs) {
+            return lhs.formIdHex == rhs.formIdHex &&
+                lhs.name == rhs.name &&
+                lhs.healthRestorePower == rhs.healthRestorePower &&
+                lhs.magickaRestorePower == rhs.magickaRestorePower &&
+                lhs.staminaRestorePower == rhs.staminaRestorePower;
+        });
+    }
+
     static std::string FormatItemList(const std::vector<ItemEntry>& entries)
     {
         std::string out;
@@ -58,6 +71,21 @@ namespace DragonbornVoiceControl
             out += entries[i].formIdHex;
             out += ' ';
             out += entries[i].name;
+        }
+        return out;
+    }
+
+    static std::string FormatPotionList(const std::vector<PotionEntry>& entries)
+    {
+        std::string out;
+        for (size_t i = 0; i < entries.size(); ++i) {
+            if (i > 0) out += ", ";
+            out += entries[i].formIdHex;
+            out += ' ';
+            out += entries[i].name;
+            out += " h=" + std::to_string(entries[i].healthRestorePower);
+            out += " m=" + std::to_string(entries[i].magickaRestorePower);
+            out += " s=" + std::to_string(entries[i].staminaRestorePower);
         }
         return out;
     }
@@ -90,7 +118,14 @@ namespace DragonbornVoiceControl
     static std::vector<PowerEntry> g_lastPowers;
     static std::vector<ItemEntry> g_lastWeapons;
     static std::vector<ItemEntry> g_lastSpells;
-    static std::vector<ItemEntry> g_lastPotions;
+    static std::vector<PotionEntry> g_lastPotions;
+    static std::atomic_bool g_favoritesWatcherRegistered{ false };
+
+    bool AnyFavoritesFeatureEnabled()
+    {
+        return IsVoiceShoutsEnabled() || IsEnablePowersEnabled() || IsWeaponsEnabled() ||
+               IsSpellsEnabled() || IsPotionsEnabled();
+    }
 
     // ── Favorite scanning ───────────────────────────────────
 
@@ -204,7 +239,38 @@ namespace DragonbornVoiceControl
         return entries;
     }
 
-    static std::vector<ItemEntry> CollectFavoritePotions()
+    static float GetPotionRestorePower(RE::AlchemyItem* potion, RE::ActorValue targetAV)
+    {
+        if (!potion || potion->IsPoison()) {
+            return 0.0f;
+        }
+
+        float best = 0.0f;
+        for (auto* effect : potion->effects) {
+            if (!effect || !effect->baseEffect) {
+                continue;
+            }
+
+            auto* baseEffect = effect->baseEffect;
+            const bool isValueModifier =
+                baseEffect->data.archetype == RE::EffectSetting::Archetype::kValueModifier;
+            const bool affectsTargetAV =
+                baseEffect->data.primaryAV == targetAV;
+
+            if (!isValueModifier || !affectsTargetAV) {
+                continue;
+            }
+
+            const float magnitude = effect->GetMagnitude();
+            if (magnitude > best) {
+                best = magnitude;
+            }
+        }
+
+        return best;
+    }
+
+    static std::vector<PotionEntry> CollectFavoritePotions()
     {
         if (!IsPotionsEnabled()) return {};
 
@@ -241,7 +307,7 @@ namespace DragonbornVoiceControl
             }
         }
 
-        std::vector<ItemEntry> entries;
+        std::vector<PotionEntry> entries;
         for (RE::FormID id : favPotionIds) {
             auto* form = RE::TESForm::LookupByID<RE::AlchemyItem>(id);
             if (!form) continue;
@@ -263,14 +329,17 @@ namespace DragonbornVoiceControl
             }
             if (!hasItem) continue;
 
-            ItemEntry e;
+            PotionEntry e;
             e.formIdHex = std::string("0x") + detail::FormIDToHex(id);
             e.name = std::move(name);
+            e.healthRestorePower = GetPotionRestorePower(form, RE::ActorValue::kHealth);
+            e.magickaRestorePower = GetPotionRestorePower(form, RE::ActorValue::kMagicka);
+            e.staminaRestorePower = GetPotionRestorePower(form, RE::ActorValue::kStamina);
             entries.push_back(std::move(e));
         }
 
         std::sort(entries.begin(), entries.end(),
-            [](const ItemEntry& a, const ItemEntry& b) { return a.formIdHex < b.formIdHex; });
+            [](const PotionEntry& a, const PotionEntry& b) { return a.formIdHex < b.formIdHex; });
 
         return entries;
     }
@@ -348,7 +417,7 @@ namespace DragonbornVoiceControl
 
     static std::vector<PowerEntry> CollectPowers()
     {
-        if (!IsVoiceShoutsEnabled() || !IsEnablePowersEnabled()) return {};
+        if (!IsEnablePowersEnabled()) return {};
 
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return {};
@@ -401,6 +470,10 @@ namespace DragonbornVoiceControl
 
     void ScanAllFavorites(bool force)
     {
+        if (!AnyFavoritesFeatureEnabled()) {
+            return;
+        }
+
         const bool debug = IsDebugEnabled();
 
         auto shouts = CollectShouts();
@@ -432,17 +505,17 @@ namespace DragonbornVoiceControl
                 "Powers: [" + FormatPowerList(powers) + "] "
                 "Weapons: [" + FormatItemList(weapons) + "] "
                 "Spells: [" + FormatItemList(spells) + "] "
-                "Potions: [" + FormatItemList(potions) + "]");
+                "Potions: [" + FormatPotionList(potions) + "]");
 
             if (debug) {
-                if (!shouts.empty())  LogLine("[FAV][SHOUTS] (" + FormatShoutList(shouts) + ")");
-                if (!powers.empty())  LogLine("[FAV][POWERS] (" + FormatPowerList(powers) + ")");
-                if (!weapons.empty()) LogLine("[FAV][WEAPONS] (" + FormatItemList(weapons) + ")");
-                if (!spells.empty())  LogLine("[FAV][SPELLS] (" + FormatItemList(spells) + ")");
-                if (!potions.empty()) LogLine("[FAV][POTIONS] (" + FormatItemList(potions) + ")");
+                if (!shouts.empty())  LogDebug("[FAV][SHOUTS] (" + FormatShoutList(shouts) + ")");
+                if (!powers.empty())  LogDebug("[FAV][POWERS] (" + FormatPowerList(powers) + ")");
+                if (!weapons.empty()) LogDebug("[FAV][WEAPONS] (" + FormatItemList(weapons) + ")");
+                if (!spells.empty())  LogDebug("[FAV][SPELLS] (" + FormatItemList(spells) + ")");
+                if (!potions.empty()) LogDebug("[FAV][POTIONS] (" + FormatPotionList(potions) + ")");
             }
         } else if (debug) {
-            LogLine("[FAV] ScanAllFavorites force=" + std::to_string(force) + " (no changes)");
+            LogDebug("[FAV] ScanAllFavorites force=" + std::to_string(force) + " (no changes)");
         }
 
         g_lastShouts = std::move(shouts);
@@ -465,11 +538,15 @@ namespace DragonbornVoiceControl
                 return RE::BSEventNotifyControl::kContinue;
             }
 
+            if (!AnyFavoritesFeatureEnabled()) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
             // FavoritesMenu, MagicMenu, or InventoryMenu closed → full rescan of all categories
             if (a_event->menuName == "FavoritesMenu"sv ||
                 a_event->menuName == "MagicMenu"sv ||
                 a_event->menuName == "InventoryMenu"sv) {
-                LogLine(std::string("[FAV] ") + a_event->menuName.data() + " closed, scheduling rescan");
+                LogDebug(std::string("[FAV] ") + a_event->menuName.data() + " closed, scheduling rescan");
                 if (auto* t = SKSE::GetTaskInterface(); t) {
                     t->AddTask([]() {
                         ScanAllFavorites(false);
@@ -485,9 +562,14 @@ namespace DragonbornVoiceControl
 
     void RegisterFavoritesWatcher()
     {
+        if (!AnyFavoritesFeatureEnabled() || g_favoritesWatcherRegistered.load()) {
+            return;
+        }
+
         if (auto ui = RE::UI::GetSingleton()) {
             ui->AddEventSink(&g_favoritesWatcher);
-            LogLine("[FAV] FavoritesMenuWatcher registered");
+            g_favoritesWatcherRegistered.store(true);
+            LogDebug("[FAV] FavoritesMenuWatcher registered");
         } else {
             LogLine("[FAV][WARN] UI singleton not available for favorites watcher");
         }

@@ -19,7 +19,7 @@ from rich.progress import (
     TextColumn,
 )
 
-from log_utils import setup_timestamped_print
+from log_utils import setup_timestamped_print, log_info
 
 setup_timestamped_print()
 
@@ -160,7 +160,7 @@ def ensure_vosk_model(model_name: str, cache_dir: Path) -> Path:
     if model_dir.exists():
         return model_dir
 
-    print(f"[VOSK] model '{model_name}' not found in cache -> downloading…", flush=True)
+    log_info(f"[VOSK] model '{model_name}' not found in cache -> downloading…")
 
     try:
         model_list = _http_get_json(VOSK_MODEL_LIST_URL)
@@ -185,16 +185,16 @@ def ensure_vosk_model(model_name: str, cache_dir: Path) -> Path:
         shutil.rmtree(extract_root, ignore_errors=True)
 
     try:
-        print(f"[VOSK] downloading: {url}", flush=True)
+        log_info(f"[VOSK] downloading: {url}")
         _download_file(url, archive_path)
-        print(f"[VOSK] extracting: {archive_path.name}", flush=True)
+        log_info(f"[VOSK] extracting: {archive_path.name}")
         _extract_archive(archive_path, extract_root)
 
         picked = _pick_extracted_model_dir(extract_root, model_name)
 
         model_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(picked), str(model_dir))
-        print(f"[VOSK] ready: {model_dir}", flush=True)
+        log_info(f"[VOSK] ready: {model_dir}")
         return model_dir
     finally:
         try:

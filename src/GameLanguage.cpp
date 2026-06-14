@@ -4,11 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
-#include <filesystem>
-#include <fstream>
 #include <string>
-
-#include <ShlObj.h>
 
 namespace
 {
@@ -36,88 +32,6 @@ namespace
         }
         return out;
     }
-
-    std::filesystem::path GetMyGamesDir()
-    {
-        wchar_t docs[MAX_PATH] = {};
-        if (FAILED(SHGetFolderPathW(NULL, CSIDL_PERSONAL, NULL, 0, docs))) {
-            return {};
-        }
-        return std::filesystem::path(docs) / L"My Games";
-    }
-
-    std::wstring GetEditionFolderName()
-    {
-        if (REL::Module::IsVR()) {
-            return L"Skyrim VR";
-        }
-        if (REL::Module::IsAE()) {
-            return L"Skyrim Special Edition";
-        }
-        return L"Skyrim Special Edition";
-    }
-
-    std::string ReadLanguageFromIni(const std::filesystem::path& path)
-    {
-        std::ifstream f(path);
-        if (!f.is_open()) {
-            return {};
-        }
-
-        std::string line;
-        std::string section;
-        while (std::getline(f, line)) {
-            std::string s = TrimLower(line);
-            if (s.empty()) {
-                continue;
-            }
-            if (s.rfind(";", 0) == 0 || s.rfind("#", 0) == 0) {
-                continue;
-            }
-            if (s.front() == '[' && s.back() == ']') {
-                section = s.substr(1, s.size() - 2);
-                continue;
-            }
-            if (section != "general") {
-                continue;
-            }
-            auto eq = s.find('=');
-            if (eq == std::string::npos) {
-                continue;
-            }
-            std::string key = s.substr(0, eq);
-            std::string value = s.substr(eq + 1);
-            key = TrimLower(key);
-            value = TrimLower(value);
-            if (key == "slanguage") {
-                return value;
-            }
-        }
-
-        return {};
-    }
-
-    std::string ReadLanguageFromIniFiles()
-    {
-        auto myGames = GetMyGamesDir();
-        if (myGames.empty()) {
-            return {};
-        }
-
-        auto base = myGames / GetEditionFolderName();
-        if (base.empty()) {
-            return {};
-        }
-
-        auto custom = base / L"SkyrimCustom.ini";
-        auto ini = base / L"Skyrim.ini";
-
-        std::string value = ReadLanguageFromIni(custom);
-        if (!value.empty()) {
-            return value;
-        }
-        return ReadLanguageFromIni(ini);
-    }
 }
 
 namespace DragonbornVoiceControl
@@ -135,11 +49,6 @@ namespace DragonbornVoiceControl
                     raw = s;
                 }
             }
-        }
-
-        std::string iniRaw = ReadLanguageFromIniFiles();
-        if (!iniRaw.empty()) {
-            raw = iniRaw;
         }
 
         if (raw.empty()) {

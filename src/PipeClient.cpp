@@ -1,7 +1,10 @@
 #include "PipeClient.h"
 
+#include "Logging.h"
+
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <cctype>
 #include <sstream>
 #include <SKSE/SKSE.h>
 
@@ -40,6 +43,7 @@ void PipeClient::Stop()
     }
 
     _connected = false;
+    _clientReady = false;
 
     if (_thread.joinable()) {
         _thread.join();
@@ -64,12 +68,6 @@ void PipeClient::SendListen(bool on)
     _pendingListen = on;
 }
 
-void PipeClient::SendListenCommands(bool on)
-{
-    std::lock_guard lg(_sendMutex);
-    _pendingListenCommands = on;
-}
-
 void PipeClient::SendShoutContext(bool allowed)
 {
     std::lock_guard lg(_sendMutex);
@@ -86,6 +84,12 @@ void PipeClient::SendPlayerCombatState(bool inCombat)
 {
     std::lock_guard lg(_sendMutex);
     _desiredPlayerCombat = inCombat;
+}
+
+void PipeClient::SendBlockingMenuState(bool blocked)
+{
+    std::lock_guard lg(_sendMutex);
+    _desiredBlockingMenu = blocked;
 }
 
 void PipeClient::SendGameLanguage(const std::string& langCode)
@@ -160,6 +164,42 @@ void PipeClient::SendConfigPotions(bool enabled)
     _desiredCfgPotions = enabled;
 }
 
+void PipeClient::SendConfigPotionsQuickUse(bool enabled)
+{
+    std::lock_guard lg(_sendMutex);
+    _desiredCfgPotionsQuickUse = enabled;
+}
+
+void PipeClient::SendConfigPotionsBestPotion(bool enabled)
+{
+    std::lock_guard lg(_sendMutex);
+    _desiredCfgPotionsBestPotion = enabled;
+}
+
+void PipeClient::SendConfigSpecifyHand(bool enabled)
+{
+    std::lock_guard lg(_sendMutex);
+    _desiredCfgSpecifyHand = enabled;
+}
+
+void PipeClient::SendConfigQuickEquip(bool enabled)
+{
+    std::lock_guard lg(_sendMutex);
+    _desiredCfgQuickEquip = enabled;
+}
+
+void PipeClient::SendConfigKeyConsole(bool enabled)
+{
+    std::lock_guard lg(_sendMutex);
+    _desiredCfgKeyConsole = enabled;
+}
+
+void PipeClient::SendConfigPauseResume(bool enabled)
+{
+    std::lock_guard lg(_sendMutex);
+    _desiredCfgPauseResume = enabled;
+}
+
 void PipeClient::SendShoutsAllowed(const std::vector<ShoutEntry>& shouts)
 {
     (void)shouts;
@@ -180,7 +220,7 @@ void PipeClient::SendSpellsAllowed(const std::vector<ItemEntry>& spells)
     (void)spells;
 }
 
-void PipeClient::SendPotionsAllowed(const std::vector<ItemEntry>& potions)
+void PipeClient::SendPotionsAllowed(const std::vector<PotionEntry>& potions)
 {
     (void)potions;
 }
@@ -190,7 +230,7 @@ void PipeClient::SendAllFavorites(
     const std::vector<PowerEntry>& powers,
     const std::vector<ItemEntry>& weapons,
     const std::vector<ItemEntry>& spells,
-    const std::vector<ItemEntry>& potions)
+    const std::vector<PotionEntry>& potions)
 {
     std::vector<std::string> lines;
     lines.reserve(2 + shouts.size() + powers.size() + weapons.size() + spells.size() + potions.size());
@@ -238,7 +278,10 @@ void PipeClient::SendAllFavorites(
         std::string name = entry.name;
         SanitizeInPlace(formId);
         SanitizeFavoriteField(name);
-        lines.push_back("FAV|POTION|" + formId + "|" + name);
+        lines.push_back("FAV|POTION|" + formId + "|" + name + "|" +
+            std::to_string(entry.healthRestorePower) + "|" +
+            std::to_string(entry.magickaRestorePower) + "|" +
+            std::to_string(entry.staminaRestorePower));
     }
 
     lines.push_back("FAV|END");
@@ -266,6 +309,19 @@ std::optional<bool> PipeClient::ConsumeConnectionEvent()
     auto e = _connEvent;
     _connEvent.reset();
     return e;
+}
+
+std::optional<bool> PipeClient::ConsumeClientReadyEvent()
+{
+    std::lock_guard lg(_connMutex);
+    auto e = _readyEvent;
+    _readyEvent.reset();
+    return e;
+}
+
+bool PipeClient::IsClientReady() const
+{
+    return _clientReady.load();
 }
 
 bool PipeClient::WriteLine(const std::string& line)
@@ -299,6 +355,84 @@ static void SanitizeFavoriteField(std::string& s)
             c = ' ';
         }
     }
+}
+
+static int Base64Value(char c)
+{
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+' || c == '-') return 62;
+    if (c == '/' || c == '_') return 63;
+    return -1;
+}
+
+static std::string DecodeBase64Url(const std::string& input)
+{
+    std::string out;
+    int val = 0;
+    int bits = -8;
+    for (char c : input) {
+        if (c == '=') {
+            break;
+        }
+        const int d = Base64Value(c);
+        if (d < 0) {
+            continue;
+        }
+        val = (val << 6) | d;
+        bits += 6;
+        if (bits >= 0) {
+            out.push_back(static_cast<char>((val >> bits) & 0xFF));
+            bits -= 8;
+        }
+    }
+    return out;
+}
+
+static std::vector<std::string> ParseJsonStringArray(const std::string& json)
+{
+    std::vector<std::string> out;
+    bool inString = false;
+    bool escape = false;
+    std::string current;
+
+    for (char c : json) {
+        if (!inString) {
+            if (c == '"') {
+                inString = true;
+                current.clear();
+            }
+            continue;
+        }
+
+        if (escape) {
+            switch (c) {
+            case '"': current.push_back('"'); break;
+            case '\\': current.push_back('\\'); break;
+            case '/': current.push_back('/'); break;
+            case 'b': current.push_back('\b'); break;
+            case 'f': current.push_back('\f'); break;
+            case 'n': current.push_back('\n'); break;
+            case 'r': current.push_back('\r'); break;
+            case 't': current.push_back('\t'); break;
+            default: current.push_back(c); break;
+            }
+            escape = false;
+            continue;
+        }
+
+        if (c == '\\') {
+            escape = true;
+        } else if (c == '"') {
+            inString = false;
+            out.push_back(current);
+        } else {
+            current.push_back(c);
+        }
+    }
+
+    return out;
 }
 
 void PipeClient::ProcessIncoming()
@@ -361,7 +495,8 @@ void PipeClient::ProcessIncoming()
                 }
             }
 
-            SKSE::log::info("[DVC_SERVER] recv RES index={} score={}", resp.index, resp.score);
+            DragonbornVoiceControl::LogDebug("[DVC_SERVER] recv RES index=" + std::to_string(resp.index) +
+                " score=" + std::to_string(resp.score));
         } else if (line.rfind("TRIG|", 0) == 0) {
             PipeResponse resp;
             resp.type = "TRIG";
@@ -395,21 +530,43 @@ void PipeClient::ProcessIncoming()
                             size_t p3 = line.find('|', p2 + 1);
                             if (p3 != std::string::npos) {
                                 resp.score = std::stof(line.substr(p2 + 1, p3 - p2 - 1));
-                                size_t p4 = line.find('|', p3 + 1);
-                                if (p4 != std::string::npos) {
-                                    resp.trigText = line.substr(p4 + 1);
-                                }
+                                resp.trigText = line.substr(p3 + 1);
                             }
                         }
                     } else if (resp.trigKind == "weapon" || resp.trigKind == "spell" || resp.trigKind == "potion") {
-                        // TRIG|weapon|formid|score|text
+                        // Legacy: TRIG|weapon|formid|score|text
+                        // New weapon/spell: TRIG|weapon|formid|hand|score|text
                         size_t p2 = line.find('|', p1 + 1);
                         if (p2 != std::string::npos) {
                             resp.itemFormID = line.substr(p1 + 1, p2 - p1 - 1);
                             size_t p3 = line.find('|', p2 + 1);
                             if (p3 != std::string::npos) {
-                                resp.score = std::stof(line.substr(p2 + 1, p3 - p2 - 1));
-                                resp.trigText = line.substr(p3 + 1);
+                                std::string scoreOrHand = line.substr(p2 + 1, p3 - p2 - 1);
+                                if ((resp.trigKind == "weapon" || resp.trigKind == "spell") &&
+                                    (scoreOrHand == "left" || scoreOrHand == "right" || scoreOrHand == "both")) {
+                                    resp.itemEquipHand = scoreOrHand;
+                                    size_t p4 = line.find('|', p3 + 1);
+                                    if (p4 != std::string::npos) {
+                                        resp.score = std::stof(line.substr(p3 + 1, p4 - p3 - 1));
+                                        resp.trigText = line.substr(p4 + 1);
+                                    }
+                                } else {
+                                    resp.itemEquipHand = "right";
+                                    resp.score = std::stof(scoreOrHand);
+                                    resp.trigText = line.substr(p3 + 1);
+                                }
+                            }
+                        }
+                    } else if (resp.trigKind == "custom") {
+                        size_t p2 = line.find('|', p1 + 1);
+                        if (p2 != std::string::npos) {
+                            resp.score = std::stof(line.substr(p1 + 1, p2 - p1 - 1));
+                            size_t p3 = line.find('|', p2 + 1);
+                            if (p3 != std::string::npos) {
+                                resp.trigText = line.substr(p2 + 1, p3 - p2 - 1);
+                                resp.customCommands = ParseJsonStringArray(DecodeBase64Url(line.substr(p3 + 1)));
+                            } else {
+                                resp.trigText = line.substr(p2 + 1);
                             }
                         }
                     } else {
@@ -433,21 +590,58 @@ void PipeClient::ProcessIncoming()
             }
 
             if (resp.trigKind == "shout") {
-                SKSE::log::info("[DVC_SERVER] recv TRIG shout formid={} power={} score={} text={}",
-                    resp.shoutFormID, resp.shoutPower, resp.score, resp.trigText);
+                DragonbornVoiceControl::LogDebug("[DVC_SERVER] recv TRIG shout formid=" + resp.shoutFormID +
+                    " power=" + std::to_string(resp.shoutPower) +
+                    " score=" + std::to_string(resp.score) +
+                    " text=" + resp.trigText);
             } else if (resp.trigKind == "power") {
-                SKSE::log::info("[DVC_SERVER] recv TRIG power formid={} score={} text={}",
-                    resp.powerFormID, resp.score, resp.trigText);
+                DragonbornVoiceControl::LogDebug("[DVC_SERVER] recv TRIG power formid=" + resp.powerFormID +
+                    " score=" + std::to_string(resp.score) +
+                    " text=" + resp.trigText);
             } else if (resp.trigKind == "weapon" || resp.trigKind == "spell" || resp.trigKind == "potion") {
-                SKSE::log::info("[DVC_SERVER] recv TRIG {} formid={} score={} text={}",
-                    resp.trigKind, resp.itemFormID, resp.score, resp.trigText);
+                DragonbornVoiceControl::LogDebug("[DVC_SERVER] recv TRIG " + resp.trigKind +
+                    " formid=" + resp.itemFormID +
+                    " hand=" + resp.itemEquipHand +
+                    " score=" + std::to_string(resp.score) +
+                    " text=" + resp.trigText);
+            } else if (resp.trigKind == "custom") {
+                DragonbornVoiceControl::LogDebug("[DVC_SERVER] recv TRIG custom commands=" +
+                    std::to_string(resp.customCommands.size()) +
+                    " score=" + std::to_string(resp.score) +
+                    " text=" + resp.trigText);
             } else {
-                SKSE::log::info("[DVC_SERVER] recv TRIG kind={} score={} text={}", resp.trigKind, resp.score, resp.trigText);
+                DragonbornVoiceControl::LogDebug("[DVC_SERVER] recv TRIG kind=" + resp.trigKind +
+                    " score=" + std::to_string(resp.score) +
+                    " text=" + resp.trigText);
             }
+        } else if (line == "READY|CLIENT") {
+            _clientReady.store(true);
+            {
+                std::lock_guard lg(_connMutex);
+                _readyEvent = true;
+            }
+            DragonbornVoiceControl::LogInfo("[DVC_SERVER] Server Ready");
         } else if (line.rfind("DBG|", 0) == 0) {
+            std::string payload = line.substr(4);
+            if (payload.rfind("LOG|", 0) == 0) {
+                size_t p1 = payload.find('|', 4);
+                if (p1 != std::string::npos) {
+                    std::string level = payload.substr(4, p1 - 4);
+                    std::string msg = payload.substr(p1 + 1);
+                    if (level == "WARN") {
+                        DragonbornVoiceControl::LogWarn(msg);
+                    } else if (level == "DEBUG") {
+                        DragonbornVoiceControl::LogDebug(msg);
+                    } else {
+                        DragonbornVoiceControl::LogInfo(msg);
+                    }
+                }
+                continue;
+            }
+
             PipeResponse resp;
             resp.type = "DBG";
-            resp.trigText = line.substr(4);
+            resp.trigText = payload;
 
             {
                 std::lock_guard lg(_respMutex);
@@ -456,25 +650,13 @@ void PipeClient::ProcessIncoming()
                     _responses.pop_front();
                 }
             }
-
-            SKSE::log::info("[DVC_SERVER] recv DBG text={}", resp.trigText);
-        } else {
-            if (line.rfind("effective:", 0) == 0) {
-                std::string payload = line.substr(std::string("effective:").size());
-                if (!payload.empty() && payload.front() == ' ') {
-                    payload.erase(0, 1);
-                }
-                SKSE::log::info("[DVC_SERVER] Listen status: {}", payload);
-            } else {
-                SKSE::log::info("[DVC_SERVER] recv: {}", line);
-            }
         }
     }
 }
 
 void PipeClient::ThreadMain()
 {
-    SKSE::log::info("[DVC_SERVER] thread started");
+    DragonbornVoiceControl::LogDebug("[DVC_SERVER] thread started");
 
     while (_running.load())
     {
@@ -499,7 +681,7 @@ void PipeClient::ThreadMain()
                     _connEvent = true;
                 }
 
-                SKSE::log::info("[DVC_SERVER] connected");
+                DragonbornVoiceControl::LogInfo("[DVC_SERVER] connected");
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                 continue;
@@ -562,15 +744,6 @@ void PipeClient::ThreadMain()
                     }
                 }
 
-                wroteAny = true;
-            }
-
-            if (_pendingListen.has_value()) {
-                bool on = _pendingListen.value();
-                if (!WriteLine(std::string("LISTEN|") + (on ? "1" : "0"))) {
-                    goto disconnect;
-                }
-                _pendingListen.reset();
                 wroteAny = true;
             }
 
@@ -684,50 +857,119 @@ void PipeClient::ThreadMain()
                 }
             }
 
-            if (_desiredShoutContext.has_value()) {
-                bool desired = _desiredShoutContext.value();
-                if (!_lastSentShoutContext.has_value() || _lastSentShoutContext.value() != desired) {
-                    if (!WriteLine(std::string("STATE|SHOUT_CONTEXT|") + (desired ? "1" : "0"))) {
+            if (_desiredCfgPotionsQuickUse.has_value()) {
+                bool desired = _desiredCfgPotionsQuickUse.value();
+                if (!_lastSentCfgPotionsQuickUse.has_value() || _lastSentCfgPotionsQuickUse.value() != desired) {
+                    if (!WriteLine(std::string("CFG|POTIONS_QUICK_USE|") + (desired ? "1" : "0"))) {
                         goto disconnect;
                     }
-                    _lastSentShoutContext = desired;
+                    _lastSentCfgPotionsQuickUse = desired;
                     wroteAny = true;
                 }
             }
 
-            if (_desiredPlayerDrawn.has_value()) {
-                bool desired = _desiredPlayerDrawn.value();
-                if (!_lastSentPlayerDrawn.has_value() || _lastSentPlayerDrawn.value() != desired) {
-                    if (!WriteLine(std::string("STATE|DRAWN|") + (desired ? "1" : "0"))) {
+            if (_desiredCfgPotionsBestPotion.has_value()) {
+                bool desired = _desiredCfgPotionsBestPotion.value();
+                if (!_lastSentCfgPotionsBestPotion.has_value() || _lastSentCfgPotionsBestPotion.value() != desired) {
+                    if (!WriteLine(std::string("CFG|POTIONS_BEST_POTION|") + (desired ? "1" : "0"))) {
                         goto disconnect;
                     }
-                    _lastSentPlayerDrawn = desired;
+                    _lastSentCfgPotionsBestPotion = desired;
                     wroteAny = true;
                 }
             }
 
-            if (_desiredPlayerCombat.has_value()) {
-                bool desired = _desiredPlayerCombat.value();
-                if (!_lastSentPlayerCombat.has_value() || _lastSentPlayerCombat.value() != desired) {
-                    if (!WriteLine(std::string("STATE|COMBAT|") + (desired ? "1" : "0"))) {
+            if (_desiredCfgSpecifyHand.has_value()) {
+                bool desired = _desiredCfgSpecifyHand.value();
+                if (!_lastSentCfgSpecifyHand.has_value() || _lastSentCfgSpecifyHand.value() != desired) {
+                    if (!WriteLine(std::string("CFG|SPECIFY_HAND|") + (desired ? "1" : "0"))) {
                         goto disconnect;
                     }
-                    _lastSentPlayerCombat = desired;
+                    _lastSentCfgSpecifyHand = desired;
                     wroteAny = true;
                 }
             }
 
-            // Important ordering:
-            // server ignores LISTEN|SHOUTS|1 while CFG for voice commands is still 0.
-            // Send CFG first, then LISTEN|SHOUTS to avoid losing the enable command.
-            if (_pendingListenCommands.has_value()) {
-                bool on = _pendingListenCommands.value();
-                if (!WriteLine(std::string("LISTEN|SHOUTS|") + (on ? "1" : "0"))) {
+            if (_desiredCfgQuickEquip.has_value()) {
+                bool desired = _desiredCfgQuickEquip.value();
+                if (!_lastSentCfgQuickEquip.has_value() || _lastSentCfgQuickEquip.value() != desired) {
+                    if (!WriteLine(std::string("CFG|QUICK_EQUIP|") + (desired ? "1" : "0"))) {
+                        goto disconnect;
+                    }
+                    _lastSentCfgQuickEquip = desired;
+                    wroteAny = true;
+                }
+            }
+
+            if (_desiredCfgKeyConsole.has_value()) {
+                bool desired = _desiredCfgKeyConsole.value();
+                if (!_lastSentCfgKeyConsole.has_value() || _lastSentCfgKeyConsole.value() != desired) {
+                    if (!WriteLine(std::string("CFG|KEY_CONSOLE|") + (desired ? "1" : "0"))) {
+                        goto disconnect;
+                    }
+                    _lastSentCfgKeyConsole = desired;
+                    wroteAny = true;
+                }
+            }
+
+            if (_desiredCfgPauseResume.has_value()) {
+                bool desired = _desiredCfgPauseResume.value();
+                if (!_lastSentCfgPauseResume.has_value() || _lastSentCfgPauseResume.value() != desired) {
+                    if (!WriteLine(std::string("CFG|PAUSE_RESUME|") + (desired ? "1" : "0"))) {
+                        goto disconnect;
+                    }
+                    _lastSentCfgPauseResume = desired;
+                    wroteAny = true;
+                }
+            }
+
+            if (_desiredShoutContext.has_value() &&
+                _desiredPlayerDrawn.has_value() &&
+                _desiredPlayerCombat.has_value()) {
+                const bool desiredShoutContext = _desiredShoutContext.value();
+                const bool desiredPlayerDrawn = _desiredPlayerDrawn.value();
+                const bool desiredPlayerCombat = _desiredPlayerCombat.value();
+                const bool desiredBlockingMenu = _desiredBlockingMenu.value_or(false);
+                const bool stateChanged =
+                    !_lastSentShoutContext.has_value() ||
+                    !_lastSentPlayerDrawn.has_value() ||
+                    !_lastSentPlayerCombat.has_value() ||
+                    !_lastSentBlockingMenu.has_value() ||
+                    _lastSentShoutContext.value() != desiredShoutContext ||
+                    _lastSentPlayerDrawn.value() != desiredPlayerDrawn ||
+                    _lastSentPlayerCombat.value() != desiredPlayerCombat ||
+                    _lastSentBlockingMenu.value() != desiredBlockingMenu;
+
+                if (stateChanged) {
+                    std::string line = "STATE|ALL|";
+                    line += desiredShoutContext ? "1" : "0";
+                    line += "|";
+                    line += desiredPlayerDrawn ? "1" : "0";
+                    line += "|";
+                    line += desiredPlayerCombat ? "1" : "0";
+                    line += "|";
+                    line += desiredBlockingMenu ? "1" : "0";
+                    if (!WriteLine(line)) {
+                        goto disconnect;
+                    }
+                    _lastSentShoutContext = desiredShoutContext;
+                    _lastSentPlayerDrawn = desiredPlayerDrawn;
+                    _lastSentPlayerCombat = desiredPlayerCombat;
+                    _lastSentBlockingMenu = desiredBlockingMenu;
+                    wroteAny = true;
+                }
+            }
+
+            if (_pendingListen.has_value()) {
+                bool on = _pendingListen.value();
+                if (!WriteLine(std::string("LISTEN|") + (on ? "1" : "0"))) {
                     goto disconnect;
                 }
-                _pendingListenCommands.reset();
+                _pendingListen.reset();
                 wroteAny = true;
             }
+
+
         }
 
         ProcessIncoming();
@@ -750,13 +992,14 @@ void PipeClient::HandleDisconnect()
         return;
     }
 
-    SKSE::log::info("[DVC_SERVER] disconnect");
+    DragonbornVoiceControl::LogWarn("[DVC_SERVER] disconnect");
 
     if (_pipe) {
         CloseHandle((HANDLE)_pipe);
         _pipe = nullptr;
     }
     _connected = false;
+    _clientReady = false;
 
     // Force sticky CFG re-send after next reconnect.
     // Server process may have restarted and lost runtime state.
@@ -772,14 +1015,22 @@ void PipeClient::HandleDisconnect()
         _lastSentCfgSpells.reset();
         _lastSentCfgPowers.reset();
         _lastSentCfgPotions.reset();
+        _lastSentCfgPotionsQuickUse.reset();
+        _lastSentCfgPotionsBestPotion.reset();
+        _lastSentCfgSpecifyHand.reset();
+        _lastSentCfgQuickEquip.reset();
+        _lastSentCfgKeyConsole.reset();
+        _lastSentCfgPauseResume.reset();
         _lastSentShoutContext.reset();
         _lastSentPlayerDrawn.reset();
         _lastSentPlayerCombat.reset();
+        _lastSentBlockingMenu.reset();
         _lastSentGameLang.reset();
     }
 
     {
         std::lock_guard lg(_connMutex);
         _connEvent = false;
+        _readyEvent = false;
     }
 }

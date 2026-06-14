@@ -17,6 +17,8 @@ build
 cmake-build*
 *.dll
 *.pdb
+tests/
+__pycache__/
 
 # Skyrim archive files
 *.bsa

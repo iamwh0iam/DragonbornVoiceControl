@@ -36,6 +36,16 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+def _env_optional_float(key: str, default: float | None) -> float | None:
+    value = os.environ.get(key)
+    if value is None or not value.strip():
+        return default
+    try:
+        return float(value.strip())
+    except Exception:
+        return default
+
+
 @dataclass
 class VADConfig:
     frame: int
@@ -81,12 +91,6 @@ class SileroStreamVAD:
         return self.speech_prob(pcm16_fixed) >= thr
 
 
-def _record_ptt(seconds: float, sr: int = SR) -> np.ndarray:
-    audio = sd.rec(int(seconds * sr), samplerate=sr, channels=1, dtype="int16")
-    sd.wait()
-    return audio.reshape(-1)
-
-
 def _record_ptt_device(seconds: float, *, device=None, sr: int = SR) -> np.ndarray:
     audio = sd.rec(
         int(seconds * sr),
@@ -97,6 +101,40 @@ def _record_ptt_device(seconds: float, *, device=None, sr: int = SR) -> np.ndarr
     )
     sd.wait()
     return audio.reshape(-1)
+
+
+def _ptt_meta(t_cap0: float, t_cap1: float, samples: int, sr: int = SR) -> dict:
+    return {"t_wait": 0.0, "t_vad": (t_cap1 - t_cap0), "utt_sec": samples / sr, "tail_sil_ms": 0.0}
+
+
+def _record_ptt_until_release(hotkey: str, should_abort, *, device=None, sr: int = SR):
+    frames: list[np.ndarray] = []
+    t_cap0 = time.perf_counter()
+
+    with sd.InputStream(
+        samplerate=sr,
+        channels=1,
+        dtype="int16",
+        blocksize=2048,
+        device=device,
+    ) as stream:
+        while keyboard.is_pressed(hotkey):
+            if should_abort():
+                t_now = time.perf_counter()
+                return None, _ptt_meta(t_cap0, t_now, 0, sr), "pipe"
+
+            pcm = _read_stream_block(stream)
+            if pcm is None:
+                time.sleep(0.001)
+                continue
+            frames.append(pcm.copy())
+
+    t_cap1 = time.perf_counter()
+    if not frames:
+        return None, _ptt_meta(t_cap0, t_cap1, 0, sr), "no_speech"
+
+    pcm16 = np.concatenate(frames)
+    return pcm16, _ptt_meta(t_cap0, t_cap1, pcm16.size, sr), "ok"
 
 
 def _frame_limits(frame: int, sr: int, start_ms: int, end_sil_ms: int, max_utt_sec: float, min_utt_sec: float, max_wait_sec: float):
@@ -392,10 +430,10 @@ class AudioPipeline:
         cfg_hotkey = self.cfg.ptt_key
         cfg_ptt_sec = self.cfg.ptt_sec
 
-        self.mode = _env_str("DVC_MODE", str(cfg_mode)).lower()
-        self.hotkey = _env_str("DVC_PTT_KEY", str(cfg_hotkey)).lower()
-        self.ptt_seconds = _env_float("DVC_PTT_SEC", float(cfg_ptt_sec))
-        self.SetMic = _env_str("DVC_SetMic", str(self.cfg.SetMic))
+        self.mode = _env_str("DVC_VOICE_MODE", str(cfg_mode)).lower()
+        self.hotkey = _env_str("DVC_VOICE_MODE_HOTKEY", str(cfg_hotkey)).lower()
+        self.ptt_seconds = _env_optional_float("DVC_VOICE_MODE_SECONDS", cfg_ptt_sec)
+        self.SetMic = _env_str("DVC_VOICE_MODE_SET_MIC", str(self.cfg.SetMic))
 
         self.vad_frame = _env_int("DVC_VAD_FRAME", int(self.cfg.vad_frame))
         self.vad_thr = _env_float("DVC_VAD_THR", float(self.cfg.vad_thr))
@@ -451,9 +489,9 @@ class AudioPipeline:
                 dev = sd.query_devices(idx)
                 if int(dev.get("max_input_channels", 0)) > 0:
                     return idx
-                log_warn(f"[AUDIO][WARN] Mode.SetMic={idx} is not an input device, fallback to default input")
+                log_warn(f"[AUDIO][WARN] Voice Mode.SetMic={idx} is not an input device, fallback to default input")
             except Exception as e:
-                log_warn(f"[AUDIO][WARN] invalid Mode.SetMic={set_mic_raw!r}: {e}; fallback to default input")
+                log_warn(f"[AUDIO][WARN] invalid Voice Mode.SetMic={set_mic_raw!r}: {e}; fallback to default input")
 
         try:
             default_in, _ = sd.default.device
@@ -494,12 +532,18 @@ class AudioPipeline:
         if self.mode == "ptt":
             if not keyboard.is_pressed(self.hotkey):
                 return None, {"t_wait": 0.0, "t_vad": 0.0, "utt_sec": 0.0, "tail_sil_ms": 0.0}, "no_hotkey"
+            if self.ptt_seconds is None:
+                return _record_ptt_until_release(
+                    self.hotkey,
+                    self._should_abort,
+                    device=self.input_device,
+                    sr=SR,
+                )
             time.sleep(0.15)
             t_cap0 = time.perf_counter()
             pcm16 = _record_ptt_device(seconds=self.ptt_seconds, device=self.input_device, sr=SR)
             t_cap1 = time.perf_counter()
-            meta = {"t_wait": 0.0, "t_vad": (t_cap1 - t_cap0), "utt_sec": pcm16.size / SR, "tail_sil_ms": 0.0}
-            return pcm16, meta, "ok"
+            return pcm16, _ptt_meta(t_cap0, t_cap1, pcm16.size), "ok"
 
         vad = self._ensure_vad()
         return _record_vad_stream_with_preroll(

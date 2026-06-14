@@ -7,6 +7,8 @@ namespace DragonbornVoiceControl
     /// On MagicMenu close   → rescan shouts (player may have spent dragon souls).
     void RegisterFavoritesWatcher();
 
+    bool AnyFavoritesFeatureEnabled();
+
     /// Full scan of all enabled categories.  Called on save load and reconnect.
     void ScanAllFavorites(bool force);
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -9,7 +10,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from log_utils import setup_timestamped_print, log_warn
+from log_utils import setup_timestamped_print, log_debug, log_warn
 
 setup_timestamped_print()
 
@@ -27,6 +28,9 @@ PHASE_B_MIN_SCORE_3WORD = 0.40
 
 
 def _runtime_dir() -> Path:
+    raw = os.environ.get("DVC_APP_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
     if bool(getattr(sys, "frozen", False)):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
@@ -1037,9 +1041,8 @@ class ShoutRecognizer:
         plugin, baseid = formid_info
 
         try:
-            print(
+            log_debug(
                 f"[SHOUT][MAP] shout={result.shout_name.upper()} -> plugin={plugin} baseid={baseid}",
-                flush=True,
             )
         except Exception:
             pass
